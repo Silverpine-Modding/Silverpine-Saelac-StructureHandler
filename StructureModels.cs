@@ -6,6 +6,39 @@ using System.Collections.Generic;
 namespace StructureHandler;
 
 [Serializable]
+internal sealed class PendingTileImport
+{
+    public int x;
+    public int y;
+    public StructureFile structure = new();
+}
+
+[Serializable]
+internal sealed class StructureWorldState
+{
+    public List<StructurePosition> protectedTiles = new();
+    public List<StructurePosition> buildableTiles = new();
+    public List<RegeneratingResourceMarker> resources = new();
+    public List<PendingTileImport> pending = new();
+    public List<StructureAppearance> appearances = new();
+    public List<StructureObject> supplementalObjects = new();
+    public List<StructureObject> clearedScenery = new();
+    public List<StructurePosition> importedCells = new();
+}
+
+[Serializable]
+internal sealed class StructureAppearance
+{
+    public string prefabName = "";
+    public float x;
+    public float y;
+    public float z;
+    public int spriteVariantIndex = -1;
+    public bool lockSpriteVariant;
+    public bool extender;
+}
+
+[Serializable]
 internal sealed class StructureFile
 {
     public int formatVersion = 3;
@@ -43,6 +76,7 @@ internal sealed class SupportingTerrain
     public int y;
     public float z;
     public int spriteVariantIndex = -1;
+    public bool lockSpriteVariant;
     public bool hasMapZoneName;
     public string mapZoneName = "";
     public List<StructureComponent> components = new();
@@ -58,6 +92,7 @@ internal sealed class StructureObject
     public bool npcInteractionRangeExtender;
     public int turnableIndex = -1;
     public int spriteVariantIndex = -1;
+    public bool lockSpriteVariant;
     public bool hasEditableSignMessage;
     public string signMessage = "";
     public bool hasMapZoneName;

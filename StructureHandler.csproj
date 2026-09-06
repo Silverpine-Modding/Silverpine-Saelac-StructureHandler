@@ -3,7 +3,7 @@
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>StructureHandler</AssemblyName>
     <Product>Structure Handler</Product>
-    <Version>1.2.2</Version>
+    <Version>1.2.6</Version>
     <LangVersion>latest</LangVersion>
     <RootNamespace>StructureHandler</RootNamespace>
     <RestoreAdditionalProjectSources>

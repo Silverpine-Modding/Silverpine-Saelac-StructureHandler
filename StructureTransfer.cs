@@ -264,6 +264,9 @@ internal static class StructureTransfer
                 serializedObjectsBase64 = ""
             };
 
+            // Destination-specific ground is captured at import time. Keep it
+            // in transaction/native-save snapshots, not in portable exports.
+            DestinationGroundPolicy.StripExportedHistory(file);
             Action write = () =>
             {
                 try
@@ -431,15 +434,34 @@ internal static class StructureTransfer
     internal static void ApplyLoadedImport(StructureFile file)
     {
         var occupied = GetOccupiedPositions(file);
-        var originals = CollectObjectsAt(occupied);
+        var replacingPrefabs = new HashSet<string>(file.objects.Select(item => item.prefabName)
+            .Concat(file.supportingTerrain.Where(item => ShouldImportTerrain(item.prefabName))
+                .Select(item => item.prefabName)), StringComparer.OrdinalIgnoreCase);
+        var originals = CollectObjectsAt(occupied, replacingPrefabs);
         originals.UnionWith(CollectVegetationAt(occupied));
+        var destinationGround = DestinationGround.Capture(file, originals, ShouldImportTerrain);
+        var cellsWithoutTerrain = DestinationSupportPolicy.GetUnreplacedCells(file,
+            occupied.Select(cell => (cell.x, cell.y)), ShouldImportTerrain,
+            (x, y) => (Mathf.RoundToInt(x), Mathf.RoundToInt(y)));
+        // Editor-created furniture (including wells) may have no terrain in
+        // its JSON. Snapshot the actual destination layers before clearing them;
+        // never invent grass or carry trees/plants along with the ground.
+        var destinationSupport = CreateObjectRecords(originals.Where(item =>
+        {
+            if (!IsTerrainObject(item)) return false;
+            var cell = item.transform.GetVector2IntPosition();
+            return cellsWithoutTerrain.Contains((cell.x, cell.y));
+        }));
         // Snapshot before destroying anything. This can fail harmlessly if an
         // original cannot be serialized or reconstructed.
         var backup = CreateObjectRecords(originals);
+        var removedNonNative = CreateObjectRecords(originals.Where(StructureTerrainPersistence.NeedsSupplemental));
         ValidateImportFiles(new[] { new StructureFile { objects = backup } });
         string savedState = StructureSaveState.Capture();
         var created = new List<GameObject>();
         bool removingOriginals = false;
+        var restoredObjects = new List<GameObject>();
+        StructureTerrainPersistence.RememberOriginals(originals);
         StructureSaveState.Mutating = true;
         try
         {
@@ -447,8 +469,12 @@ internal static class StructureTransfer
             {
                 removingOriginals = true;
                 RemoveGameObjects(originals);
+                int carriedTerrainCount = InstantiateObjectRecords(destinationSupport, created);
                 InstantiateSupportingTerrain(file.supportingTerrain, created);
                 InstantiateObjectRecords(file.objects, created);
+                // Carried destination floors already contain their own valid
+                // deconstruction history; only newly imported floors need rebasing.
+                DestinationGround.Apply(created.Skip(carriedTerrainCount), destinationGround);
                 RegisterImportedObjects(created);
                 ObjectPool.CallStarts();
                 StructureSaveState.RemoveAppearances(occupied);
@@ -457,10 +483,14 @@ internal static class StructureTransfer
                     var appearance = item.GetComponent<StructureInstanceState>()?.Data;
                     if (appearance != null)
                         StructureSaveState.TrackAppearance(item, appearance.prefabName,
-                            appearance.spriteVariantIndex, appearance.extender);
+                            appearance.spriteVariantIndex, appearance.extender, appearance.lockSpriteVariant);
                 }
                 ResourceRegeneration.ReplaceImportedResources(occupied, created);
+                StructureTerrainPersistence.RecordImport(removedNonNative, created);
                 Plugin.ProtectImportedPositions(occupied);
+                // Commit the exact footprint only after replacement succeeds.
+                // The transaction snapshot restores it if a later step fails.
+                StructureSaveState.ImportedCells.Record(occupied.Select(cell => (cell.x, cell.y)));
             }, () =>
             {
                 try
@@ -471,13 +501,16 @@ internal static class StructureTransfer
                         // Remove any originals left after an interrupted removal,
                         // then restore exactly one instance of each snapshot.
                         RemoveGameObjects(originals.Where(item => item != null && item.activeInHierarchy));
-                        var restoredObjects = new List<GameObject>();
                         InstantiateObjectRecords(backup, restoredObjects);
                         RegisterRestoredObjects(restoredObjects);
                         ObjectPool.CallStarts();
                     }
                 }
-                finally { StructureSaveState.Restore(savedState); }
+                finally
+                {
+                    StructureSaveState.Restore(savedState);
+                    StructureTerrainPersistence.AttachExisting(restoredObjects);
+                }
             }, GetDisplayName(file));
         }
         finally { StructureSaveState.Mutating = false; }
@@ -807,6 +840,7 @@ internal static class StructureTransfer
             y = position.y,
             z = gameObject.transform.position.z,
             spriteVariantIndex = GetCurrentSpriteVariantIndex(gameObject),
+            lockSpriteVariant = gameObject.GetComponent<StructureInstanceState>()?.Data?.lockSpriteVariant ?? false,
             hasMapZoneName =
                 TryGetMapZoneName(gameObject, out string zoneName),
             mapZoneName = zoneName,
@@ -837,14 +871,10 @@ internal static class StructureTransfer
             createdObjects.Add(gameObject);
             ApplyComponentRecords(
                 gameObject, terrain.components, terrain.prefabName);
-            ApplySpriteVariant(
-                gameObject,
-                terrain.prefabName,
-                terrain.spriteVariantIndex);
             if (terrain.hasMapZoneName)
                 SetMapZoneName(gameObject, terrain.mapZoneName);
             StructureSaveState.TrackAppearance(gameObject, terrain.prefabName,
-                terrain.spriteVariantIndex, false);
+                terrain.spriteVariantIndex, false, terrain.lockSpriteVariant);
         }
     }
 
@@ -860,7 +890,7 @@ internal static class StructureTransfer
         return isBathhouseWater || Plugin.ImportOtherWaterTiles.Value;
     }
 
-    private static List<StructureObject> CreateObjectRecords(
+    internal static List<StructureObject> CreateObjectRecords(
         IEnumerable<GameObject> gameObjects)
     {
         List<StructureObject> records = new();
@@ -887,6 +917,7 @@ internal static class StructureTransfer
                     turnable == null
                         ? GetCurrentSpriteVariantIndex(gameObject)
                         : -1,
+                lockSpriteVariant = gameObject.GetComponent<StructureInstanceState>()?.Data?.lockSpriteVariant ?? false,
                 hasEditableSignMessage = hasSignMessage,
                 signMessage = signMessage,
                 hasMapZoneName = hasZoneName,
@@ -1035,7 +1066,7 @@ internal static class StructureTransfer
         }
     }
 
-    private static int InstantiateObjectRecords(
+    internal static int InstantiateObjectRecords(
         IEnumerable<StructureObject> records,
         ICollection<GameObject> createdObjects)
     {
@@ -1069,13 +1100,12 @@ internal static class StructureTransfer
                 importedTurnable.SetRotation(record.turnableIndex);
             }
 
-            ApplySpriteVariant(gameObject, record);
             if (record.hasEditableSignMessage)
                 SetEditableSignMessage(gameObject, record.signMessage);
             if (record.hasMapZoneName)
                 SetMapZoneName(gameObject, record.mapZoneName);
             StructureSaveState.TrackAppearance(gameObject, record.prefabName,
-                record.spriteVariantIndex, record.npcInteractionRangeExtender);
+                record.spriteVariantIndex, record.npcInteractionRangeExtender, record.lockSpriteVariant);
             RailingPrefab.ActivateImportedInstance(gameObject);
             count++;
         }
@@ -1100,19 +1130,6 @@ internal static class StructureTransfer
             : Array.IndexOf(variants, renderer.sprite);
     }
 
-    private static void ApplySpriteVariant(
-        GameObject gameObject, StructureObject record)
-    {
-        ApplySpriteVariant(
-            gameObject, record.prefabName, record.spriteVariantIndex);
-    }
-
-    private static void ApplySpriteVariant(
-        GameObject gameObject, string prefabName, int spriteVariantIndex)
-    {
-        ApplySpriteVariantNow(gameObject, prefabName, spriteVariantIndex);
-    }
-
     internal static void ApplySpriteVariantNow(
         GameObject gameObject, string prefabName, int spriteVariantIndex)
     {
@@ -1135,17 +1152,8 @@ internal static class StructureTransfer
         int index = (spriteVariantIndex % variants.Length +
                      variants.Length) % variants.Length;
         renderer.sprite = variants[index];
-        // Store the selected native index as well as the renderer. Native
-        // RandomSprite.Start and subsequent game saves otherwise restore the old choice.
-        foreach (var random in gameObject.GetComponentsInChildren<RandomSprite>(true))
-        {
-            var fields = Traverse.Create(random);
-            var nativeSprites = fields.Field("sprites").GetValue<Sprite[]>();
-            int nativeIndex = Array.IndexOf(nativeSprites ?? Array.Empty<Sprite>(), variants[index]);
-            if (nativeIndex < 0) continue;
-            fields.Field("index").SetValue(nativeIndex);
-            fields.Field("initialized").SetValue(true);
-        }
+        // This path is only for exceptional overrides. Ordinary variants are
+        // applied to their native serialized component by NativeAppearance.
     }
 
     private static bool TryGetEditableSignMessage(
@@ -1240,7 +1248,7 @@ internal static class StructureTransfer
     }
 
     private static HashSet<GameObject> CollectObjectsAt(
-        HashSet<Vector2Int> positions)
+        HashSet<Vector2Int> positions, HashSet<string> replacingPrefabs)
     {
         HashSet<GameObject> existing = new();
         foreach (Vector2Int position in positions)
@@ -1257,17 +1265,22 @@ internal static class StructureTransfer
 
                 if (gameObject.GetComponentsInChildren<MonoBehaviour>(true)
                         .OfType<ISerializableMonoBehavior>().Any() ||
-                    IsTerrainObject(gameObject))
+                    IsTerrainObject(gameObject) ||
+                    gameObject.GetComponent<StructureSupplementalInstance>() != null ||
+                    replacingPrefabs.Contains(SerializationManager.GetPrefabName(gameObject)))
                     existing.Add(gameObject);
             }
         }
 
         // An object instantiated on a world tile other than the player's
         // current tile may not be present in Turfs yet. Scan serialized scene
-        // objects as well so later imports can still replace it instead of
-        // creating an invisible/off-tile stack.
+        // objects and our supplemental instances as well so later imports can
+        // replace them instead of creating an invisible/off-tile stack. Wells
+        // have no native serializable component, unlike most furniture.
         foreach (GameObject gameObject in
-                 GetActiveSerializableObjects())
+                 GetActiveSerializableObjects().Concat(
+                     UnityEngine.Object.FindObjectsOfType<StructureSupplementalInstance>()
+                         .Select(marker => marker.gameObject)))
         {
             if (gameObject == null || !gameObject.activeInHierarchy ||
                 !positions.Contains(
@@ -1326,7 +1339,10 @@ internal static class StructureTransfer
                 pending.RemoveAll(callbacks.Contains);
             }
             if (ObjectPool.IsObjectPoolTarget(gameObject))
+            {
                 ObjectPool.Release(gameObject);
+                StructureReleasedPoolSavePatch.MarkReleased(gameObject);
+            }
             else
             {
                 // Tile registries unregister in OnDestroy. Transaction backups
@@ -1342,7 +1358,7 @@ internal static class StructureTransfer
         RegisterRestoredObjects(gameObjects);
     }
 
-    private static void RegisterRestoredObjects(IEnumerable<GameObject> gameObjects)
+    internal static void RegisterRestoredObjects(IEnumerable<GameObject> gameObjects)
     {
         foreach (TurfRegistrar registrar in gameObjects
                      .Where(item => item != null)

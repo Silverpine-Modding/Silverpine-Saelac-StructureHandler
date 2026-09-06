@@ -1402,12 +1402,14 @@ internal sealed partial class StructureEditorUI :
                 item.spriteVariantIndex =
                     (item.spriteVariantIndex - 1 + variants.Length) %
                     variants.Length;
+                item.lockSpriteVariant = true;
                 MarkStructureDirty();
             }
             if (GUILayout.Button("Next", GUILayout.Width(55)))
             {
                 item.spriteVariantIndex =
                     (item.spriteVariantIndex + 1) % variants.Length;
+                item.lockSpriteVariant = true;
                 MarkStructureDirty();
             }
             GUILayout.EndHorizontal();
@@ -1429,6 +1431,7 @@ internal sealed partial class StructureEditorUI :
                 y = item.y,
                 z = item.z,
                 spriteVariantIndex = item.spriteVariantIndex,
+                lockSpriteVariant = item.lockSpriteVariant,
                 hasMapZoneName = item.hasMapZoneName,
                 mapZoneName = item.mapZoneName,
                 components = (item.components ??
@@ -1554,12 +1557,14 @@ internal sealed partial class StructureEditorUI :
                 item.spriteVariantIndex =
                     (item.spriteVariantIndex - 1 + variants.Length) %
                     variants.Length;
+                item.lockSpriteVariant = true;
                 MarkStructureDirty();
             }
             if (GUILayout.Button("Next", GUILayout.Width(55)))
             {
                 item.spriteVariantIndex =
                     (item.spriteVariantIndex + 1) % variants.Length;
+                item.lockSpriteVariant = true;
                 MarkStructureDirty();
             }
             GUILayout.EndHorizontal();
@@ -1589,6 +1594,7 @@ internal sealed partial class StructureEditorUI :
                     item.npcInteractionRangeExtender,
                 turnableIndex = item.turnableIndex,
                 spriteVariantIndex = item.spriteVariantIndex,
+                lockSpriteVariant = item.lockSpriteVariant,
                 hasEditableSignMessage =
                     item.hasEditableSignMessage,
                 signMessage = item.signMessage,

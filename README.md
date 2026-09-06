@@ -3,7 +3,113 @@
 Adds Structure Handler controls to Silverpine's shared in-game **Mods** menu
 and a structure editor to the main-menu mod tools.
 
-Version **1.2.2** requires **ModdingTools 1.10.0 or newer**.
+Version **1.2.6** requires **ModdingTools 1.10.0 or newer**.
+
+## Destination support for editor objects (1.2.6)
+
+- Imports now carry over the actual destination terrain at occupied cells where
+  the JSON supplies no replacement terrain. This fixes standalone editor wells
+  and the same gap for furniture, walls/doors, crops, herbs, and ores. Trees and
+  other obstructing objects are still cleared; only terrain is carried over.
+- This covers every occupied cell, including multi-cell objects and queued
+  imports when their destination is loaded. Explicit imported terrain wins;
+  disabled water imports do not count as replacement terrain.
+- Carried terrain retains its component state, room name, appearance, and any
+  existing floor-deconstruction history. It goes through the same rollback and
+  native/supplemental saving paths as the rest of the import. Portable JSONs are
+  not rewritten with destination-specific terrain.
+- Reimport replacement also recognizes previously imported supplemental objects
+  and matching incoming prefabs. Wells have no native serializable component;
+  they must not be skipped and stacked on each reimport. Character and persistent
+  object exclusions still apply.
+- Already missing ground cannot be inferred from an empty destination. Test
+  from a save before the damaged import, or explicitly add the desired supporting
+  terrain in the editor before reimporting that cell.
+
+## Imported-cell cleanup and destination ground (1.2.5)
+
+- The native-save pool filter now also excludes unused pool entries already
+  parked at coordinates replaced by successful imports. This closes the gap
+  where older inactive copies were not among the active objects cleared by the
+  import. Active objects and non-pool objects are never filtered by footprint.
+- Exact `importedCells` are stored per save (companion version 3), restored on
+  load, rolled back with failed imports, and cleared for a world tile when native
+  regeneration actually runs. This is not an active-object blacklist or an
+  automatic reimport. Deconstructed ground and intentionally imported nature
+  remain saveable. Unrelated coordinates are untouched.
+- Imported floors with the native ground-restoration handler now record the
+  destination terrain before replacement. When replacing an existing floor,
+  they inherit its underlying ground instead of recreating that old floor on
+  deconstruction. Queued imports capture this when their destination is loaded.
+  Editor-created floors use the same destination capture, not default grass.
+- New world exports omit destination-specific `GrassTileHandler` history; old
+  JSONs remain readable but their source ground is overridden on import. Native
+  saves and rollback snapshots still preserve the current ground history.
+- Restored plain terrain such as dry dirt receives supplemental saving when an
+  imported floor is deconstructed, and matching old clearance data is retired.
+  Native-serializable ground continues to use normal saving. If the importer
+  cannot identify a native-spawnable destination ground type (for example, a
+  bare world-exit utility tile), it stops before replacing that import part
+  instead of inventing grass or a missing prefab.
+
+Older saves do not contain reliable import footprints. Reimport the affected
+structure once with 1.2.5, save to a new slot, and reload to verify. As always,
+reimport replaces current objects/contents in its footprint. Existing floors
+are not retroactively assigned a different ground type merely by loading.
+
+## Native save corrections (1.2.4)
+
+- Trees/grass released by Structure Handler are excluded from native saves
+  while they are unused in the game's reuse pool. The filter tracks exact
+  removed instances, not coordinates or arbitrary disabled objects. Reclaiming
+  an object clears its exclusion. Other pool entries are untouched.
+- Legacy global protection/buildability config values are no longer migrated
+  into saves. Existing per-save choices remain intact; saves without companion
+  data start with empty tile flags. Save-specific legacy resource files can
+  still migrate safely.
+- Ordinary sprite choices are written into the native `RandomSprite` state.
+  Native rotation and seasonal variation already serialize themselves. Extenders
+  supplied by the original prefab no longer need an extra appearance record.
+  Existing redundant records migrate on visiting/loading their objects, before
+  the next native save is written; unloaded or missing objects keep their data.
+- Deliberately fixed seasonal sprites and other unsupported sprite/component
+  overrides still use companion data. Explicit editor sprite selections carry
+  `lockSpriteVariant`; ordinary exported seasonal snapshots follow native
+  seasons. Old seasonal choices inconsistent with their saved variation seed
+  are conservatively retained as overrides.
+
+**Previously affected saves:** discarded scenery may already be active in the
+native save. This update does not guess which active trees should be deleted.
+Back up the save/JSONs, reimport the affected structure once, then save to a new
+slot and reload. Reimport replaces objects and contents in its footprint.
+
+## Save/load persistence fix (1.2.3)
+
+- Save-data registration now survives Silverpine destroying the main-menu
+  BepInEx host when gameplay starts. Per-save protection, regeneration markers,
+  appearance overrides, and queued imports continue to save and restore.
+- Imported scenery not covered by native serialization (such as plain dry dirt)
+  is now stored explicitly in the `.sav.moddingtools` companion, along with the
+  specific non-serialized originals cleared by imports. Restoration is limited
+  to loaded world tiles and persistence zones, without deleting neighboring
+  terrain or replaying native-saved furniture/container state.
+- Supplemental objects are refreshed from their live state when saving/leaving
+  a tile. Removing or moving one does not revive its original imported copy.
+  Intentional tile regeneration clears that tile's supplemental records too.
+- Switching saves resets imported supplemental objects and restores suppressed
+  originals in still-loaded scenes. Older companion payloads migrate with empty
+  supplemental lists; missing prefab/restoration failures preserve saved data.
+
+**Existing affected saves:** 1.2.2 could unregister before writing any companion
+data, and never recorded non-serialized terrain. The update cannot recover
+information absent from those saves. Back up the save and source JSONs, restart
+with 1.2.5, reimport only the affected structures once, then save to a new slot.
+Reimporting replaces contents/state in its footprint as usual; subsequent loads
+do not replay the original JSON. Keep the new `.sav` and `.sav.moddingtools`
+files together. No existing saves or structure JSONs are rewritten by installing
+the update.
+
+## Editor and import features
 
 - Blue filled/outlined preview cells show the game's normal world-transition
   positions, whether or not any transition prefab exists in the JSON. They are
@@ -128,12 +234,13 @@ Version **1.2.2** requires **ModdingTools 1.10.0 or newer**.
   save through its `<save>.moddingtools` companion. Keep that companion with the
   native save when copying/backing it up. Changes are committed on a normal game
   save, not immediately on import or midnight.
-- Saves without this data migrate the old tile config values and
-  `<save>.structurehandler-resources.json` once. Old files are retained, and a
+- Saves without this data can migrate the save-specific
+  `<save>.structurehandler-resources.json` once, but never global tile config values. Old files are retained, and a
   malformed legacy resource file is not overwritten. New games start with clean
   tile settings instead of inheriting another save's choices.
-- Sprite choices are reapplied after native random-sprite initialization and
-  loading; manually added NPC interaction extenders survive saving/loading.
+- Standard sprite choices use native component saving. Exceptional fixed-sprite
+  overrides are reapplied after native initialization; manually added NPC
+  interaction extenders survive saving/loading through companion data.
   Pooled objects do not carry overrides into unrelated reused instances.
 - Mouse wheel scrolls file lists, object/terrain lists, Quick Place, long detail
   panels, and sign text. Over the preview, it zooms around the cursor. Middle
@@ -164,7 +271,11 @@ partitioning, water filtering, undo history, list virtualization, legacy binary
 decoding, transaction failure recovery, atomic JSON replacement, import file
 selection, railing state, world-transition boundaries, and planning colors. Unity
 rendering, pooled-object lifecycles, and real save/load behavior still need an
-in-game smoke test.
+in-game smoke test. The separate `Tests/NativeSerializerSmoke` project checks
+the new companion fields and old-payload compatibility using Silverpine's
+actual `StringSerializationAPI` (local game assemblies are required).
+`Tests/CheckPluginLifetime.ps1` also inspects the compiled plugin to ensure
+bootstrap cleanup cannot remove its process-lifetime save registration.
 
 Build with `dotnet build -c Release`, then copy `StructureHandler.dll` from the
 release output folder into `BepInEx/plugins/StructureHandler/`.

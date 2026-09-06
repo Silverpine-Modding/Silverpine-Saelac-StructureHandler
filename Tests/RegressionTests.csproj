@@ -7,6 +7,7 @@
     <NoWarn>$(NoWarn);CS0649</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="NativeSerializerSmoke\**\*.cs" />
     <Compile Include="..\StructureAlgorithms.cs" Link="StructureAlgorithms.cs" />
     <Compile Include="..\StructureModels.cs" Link="StructureModels.cs" />
     <Compile Include="..\StructurePlans.cs" Link="StructurePlans.cs" />
@@ -17,5 +18,10 @@
     <Compile Include="..\ImportFileSelection.cs" Link="ImportFileSelection.cs" />
     <Compile Include="..\StructureRailingState.cs" Link="StructureRailingState.cs" />
     <Compile Include="..\PlanningTiles.cs" Link="PlanningTiles.cs" />
+    <Compile Include="..\StructurePersistenceLedger.cs" Link="StructurePersistenceLedger.cs" />
+    <Compile Include="..\NativeSavePolicy.cs" Link="NativeSavePolicy.cs" />
+    <Compile Include="..\ImportFootprint.cs" Link="ImportFootprint.cs" />
+    <Compile Include="..\DestinationGroundPolicy.cs" Link="DestinationGroundPolicy.cs" />
+    <Compile Include="..\DestinationSupportPolicy.cs" Link="DestinationSupportPolicy.cs" />
   </ItemGroup>
 </Project>

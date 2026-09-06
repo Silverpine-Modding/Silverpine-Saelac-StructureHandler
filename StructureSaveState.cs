@@ -9,73 +9,48 @@ using UnityEngine;
 
 namespace StructureHandler;
 
-[Serializable]
-internal sealed class PendingTileImport
-{
-    public int x;
-    public int y;
-    public StructureFile structure = new();
-}
-
-[Serializable]
-internal sealed class StructureWorldState
-{
-    public List<StructurePosition> protectedTiles = new();
-    public List<StructurePosition> buildableTiles = new();
-    public List<RegeneratingResourceMarker> resources = new();
-    public List<PendingTileImport> pending = new();
-    public List<StructureAppearance> appearances = new();
-}
-
-[Serializable]
-internal sealed class StructureAppearance
-{
-    public string prefabName = "";
-    public float x;
-    public float y;
-    public float z;
-    public int spriteVariantIndex = -1;
-    public bool extender;
-}
-
 internal static class StructureSaveState
 {
     private static IDisposable? registration;
     private static bool restored;
     private static bool scheduled;
     private static bool processing;
+    private static int loadEpoch;
     private static Exception? migrationFailure;
     internal static bool Unloading;
     internal static bool Mutating;
     internal static string LegacySavePath = "";
     internal static readonly List<PendingTileImport> Pending = new();
+    internal static readonly ImportFootprint ImportedCells = new();
     private static readonly Dictionary<string, StructureAppearance> Appearances =
         new(StringComparer.OrdinalIgnoreCase);
 
     internal static void Initialize()
     {
+        if (registration != null) return;
         registration = ModSaveData.Register(Plugin.PluginGuid, new ModSaveDataDefinition
         {
             Id = Plugin.PluginGuid + ".world",
-            CurrentVersion = 1,
+            CurrentVersion = 3,
+            // Older versions have no imported-cell history (or supplemental
+            // terrain). Empty additive defaults never invent import footprints.
+            Migrate = (version, payload) => version == 1 || version == 2 ? payload :
+                throw new InvalidDataException("Unsupported structure save version."),
             Capture = Capture,
             Restore = Restore,
             Reset = Reset
         });
         ModSaveData.Loaded += OnLoaded;
     }
-    internal static void Shutdown()
-    {
-        ModSaveData.Loaded -= OnLoaded;
-        registration?.Dispose();
-        registration = null;
-    }
     private static void Reset()
     {
+        loadEpoch++;
+        StructureTerrainPersistence.Reset();
         Plugin.ProtectedWorldTiles.Clear();
         Plugin.BuildableWorldTiles.Clear();
         ResourceRegeneration.Reset();
         Pending.Clear();
+        ImportedCells.Reset();
         Appearances.Clear();
         restored = false;
         migrationFailure = null;
@@ -90,19 +65,26 @@ internal static class StructureSaveState
         // overrides belonging to unloaded world tiles.
         foreach (var state in UnityEngine.Object.FindObjectsOfType<StructureInstanceState>())
             state.RefreshPosition();
+        StructureTerrainPersistence.RefreshLive();
         return StringSerializationAPI.Serialize(typeof(StructureWorldState), new StructureWorldState
         {
             protectedTiles = Positions(Plugin.ProtectedWorldTiles),
             buildableTiles = Positions(Plugin.BuildableWorldTiles),
             resources = ResourceRegeneration.Records.ToList(),
             pending = Pending.ToList(),
-            appearances = Appearances.Values.ToList()
+            appearances = Appearances.Values.ToList(),
+            supplementalObjects = StructureTerrainPersistence.Ledger.Objects.Values.ToList(),
+            clearedScenery = StructureTerrainPersistence.Ledger.Cleared.Values.ToList(),
+            importedCells = ImportedCells.Capture()
         });
     }
     internal static void Restore(string json)
     {
         var state = StringSerializationAPI.Deserialize(typeof(StructureWorldState), json)
             as StructureWorldState ?? throw new InvalidDataException("Invalid structure save data.");
+        var importedCells = ImportFootprint.Read(state.importedCells);
+        StructureTerrainPersistence.Ledger.Restore(state.supplementalObjects, state.clearedScenery);
+        ImportedCells.Restore(importedCells);
         Plugin.ProtectedWorldTiles.Clear();
         Plugin.BuildableWorldTiles.Clear();
         foreach (var tile in state.protectedTiles ?? new())
@@ -126,10 +108,9 @@ internal static class StructureSaveState
         if (!restored && ModSaveData.Warnings.Count == 0 &&
             !string.IsNullOrWhiteSpace(LegacySavePath))
         {
-            // One-time migration for each legacy save. The old files are kept
-            // untouched; future changes live exclusively in the save companion.
-            Plugin.LoadProtectedWorldTiles();
-            Plugin.LoadBuildableWorldTiles();
+            // Only a save-specific legacy file can identify this save's state.
+            // The old global protection/buildability lists have no ownership
+            // information and must never be copied into unrelated saves.
             string path = LegacySavePath + ".structurehandler-resources.json";
             if (File.Exists(path))
             {
@@ -162,8 +143,10 @@ internal static class StructureSaveState
     {
         if (scheduled || ActionQueue.Instance == null) return;
         scheduled = true;
+        int epoch = loadEpoch;
         ActionQueue.Instance.DoAfterXFrames(2, () =>
         {
+            if (epoch != loadEpoch) return;
             scheduled = false;
             ProcessLoadedTile();
         });
@@ -174,6 +157,7 @@ internal static class StructureSaveState
         processing = true;
         try
         {
+            StructureTerrainPersistence.RestoreLoaded(tile);
             foreach (var pending in Pending.Where(p => p.x == tile.x && p.y == tile.y).ToArray())
             {
                 StructureTransfer.ValidateImportFiles(new[] { pending.structure });
@@ -185,14 +169,16 @@ internal static class StructureSaveState
         }
         catch (Exception exception)
         {
-            Plugin.Log.LogError("Deferred structure import remains pending: " + exception);
+            Plugin.Log.LogError("Saved terrain restoration or deferred structure import failed; saved data was retained: " + exception);
             UpperNotificationUI.Instance?.OneOff(
-                "A queued structure could not be applied. Its data was kept; see the log.");
+                "Saved terrain or a queued structure could not be restored. Its data was kept; see the log.");
         }
         finally { processing = false; }
     }
     internal static void TileCleared(Vector2Int tile)
     {
+        ImportedCells.ClearWorldTile(tile.x, tile.y);
+        StructureTerrainPersistence.ClearTile(tile);
         ResourceRegeneration.RemoveMarkersForWorldTile(tile);
         Pending.RemoveAll(p => p.x == tile.x && p.y == tile.y);
         foreach (string key in Appearances.Where(pair => Plugin.GetWorldTile(
@@ -207,32 +193,57 @@ internal static class StructureSaveState
                      .Select(pair => pair.Key).ToArray())
             Appearances.Remove(key);
     }
-    internal static void TrackAppearance(GameObject instance, string prefabName, int sprite, bool extender)
+    internal static void TrackAppearance(GameObject instance, string prefabName, int sprite, bool extender,
+        bool lockSpriteVariant = false)
     {
-        if (sprite < 0 && !extender) return;
+        var prefab = Plugin.ResolvePrefab(prefabName);
+        bool nativeSprite = NativeAppearance.TryApply(instance, prefab, sprite, lockSpriteVariant);
+        bool extraExtender = NativeSavePolicy.NeedsExtenderOverride(extender,
+            prefab != null && prefab.GetComponentInChildren<NPCInteractionRangeExtender>(true) != null);
         var position = instance.transform.position;
         var data = new StructureAppearance
         {
             prefabName = prefabName, x = position.x, y = position.y, z = position.z,
-            spriteVariantIndex = sprite, extender = extender
+            spriteVariantIndex = nativeSprite ? -1 : sprite, extender = extraExtender,
+            lockSpriteVariant = !nativeSprite && sprite >= 0
         };
+        string key = AppearanceKey(data);
+        if (data.spriteVariantIndex < 0 && !data.extender)
+        {
+            Appearances.Remove(key);
+            var old = instance.GetComponent<StructureInstanceState>();
+            if (old != null)
+            {
+                old.Data = null;
+                UnityEngine.Object.DestroyImmediate(old);
+            }
+            return;
+        }
         var state = instance.GetComponent<StructureInstanceState>() ??
             instance.AddComponent<StructureInstanceState>();
         state.Data = data;
-        Appearances[AppearanceKey(data)] = data;
+        Appearances[key] = data;
         state.Apply();
+    }
+    internal static void PrepareNativeSave()
+    {
+        if (SerializationManager.loadingSave || Appearances.Count == 0) return;
+        foreach (var state in UnityEngine.Object.FindObjectsOfType<StructureInstanceState>())
+            state.RefreshPosition();
+        // Migrate old redundant overrides BEFORE the native binary is written.
+        // Unloaded/missing objects keep their records until they can be visited.
+        RestoreAppearances();
     }
     private static void RestoreAppearances()
     {
+        if (Appearances.Count == 0) return;
         foreach (var instance in StructureTransfer.GetActiveSerializableObjects())
         {
             var position = instance.transform.position;
             string key = AppearanceKey(SerializationManager.GetPrefabName(instance), position.x, position.y, position.z);
             if (!Appearances.TryGetValue(key, out var data)) continue;
-            var state = instance.GetComponent<StructureInstanceState>() ??
-                instance.AddComponent<StructureInstanceState>();
-            state.Data = data;
-            state.Apply();
+            TrackAppearance(instance, data.prefabName, data.spriteVariantIndex, data.extender,
+                data.lockSpriteVariant);
         }
     }
     internal static string AppearanceKey(StructureAppearance data) =>

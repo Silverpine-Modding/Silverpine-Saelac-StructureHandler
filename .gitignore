@@ -31,6 +31,9 @@ saves/
 backups/
 *.Backups/
 
+# One-off local save repair, not a supported release tool
+Tools/RemoveUnwantedProtection.ps1
+
 # Operating-system metadata
 .DS_Store
 Thumbs.db

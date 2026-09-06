@@ -20,20 +20,19 @@ namespace StructureHandler;
 
 [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
 [BepInDependency(
-    Silverpine.ModdingTools.Plugin.PluginGuid,
+    // Keep compatibility with 1.10.0/1.10.1 and the alias supplied by 1.10.2+.
+    "renegadex.silverpine.moddingtools",
     "1.10.0")]
 public sealed class Plugin : BaseUnityPlugin
 {
     public const string PluginGuid = "renegadex.silverpine.customstructures";
     public const string PluginName = "Structure Handler";
-    public const string PluginVersion = "1.2.2";
+    public const string PluginVersion = "1.2.6";
     public const int EditorApiVersion = 2;
 
     internal static ManualLogSource Log = null!;
     internal static Plugin Instance = null!;
     internal static ConfigEntry<bool> ImportOtherWaterTiles = null!;
-    private static ConfigEntry<string> ProtectedWorldTilesConfig = null!;
-    private static ConfigEntry<string> BuildableWorldTilesConfig = null!;
     internal static readonly HashSet<Vector2Int> ProtectedWorldTiles = new();
     internal static readonly HashSet<Vector2Int> BuildableWorldTiles = new();
     internal static string StructuresDirectory =>
@@ -134,16 +133,6 @@ public sealed class Plugin : BaseUnityPlugin
             "ImportOtherWaterTiles",
             false,
             "Import ordinary water terrain. Bathhouse water is always imported.");
-        ProtectedWorldTilesConfig = Config.Bind(
-            "Import",
-            "ProtectedWorldTiles",
-            "",
-            "Legacy migration only. New protection choices are stored per game save.");
-        BuildableWorldTilesConfig = Config.Bind(
-            "Construction",
-            "BuildableWorldTiles",
-            "",
-            "Legacy migration only. New buildable-tile choices are stored per game save.");
         StructureSaveState.Initialize();
         Directory.CreateDirectory(StructuresDirectory);
         SceneManager.sceneLoaded += ClearPrefabFallbacks;
@@ -171,6 +160,10 @@ public sealed class Plugin : BaseUnityPlugin
             typeof(BaseShedCapturePatch),
             PluginGuid + ".base-shed-capture");
         Harmony.CreateAndPatchAll(typeof(StructureSaveLoadPatch), PluginGuid + ".save-load");
+        Harmony.CreateAndPatchAll(typeof(StructureReleasedPoolSavePatch), PluginGuid + ".released-pool-save");
+        Harmony.CreateAndPatchAll(typeof(StructurePoolClaimPatch), PluginGuid + ".pool-claim");
+        Harmony.CreateAndPatchAll(typeof(StructurePrepareNativeSavePatch), PluginGuid + ".prepare-native-save");
+        Harmony.CreateAndPatchAll(typeof(StructureRestoredGroundPatch), PluginGuid + ".restored-ground");
         Harmony.CreateAndPatchAll(typeof(StructureTileEnteredPatch), PluginGuid + ".tile-entered");
         Harmony.CreateAndPatchAll(typeof(StructureTileUnloadPatch), PluginGuid + ".tile-unload");
         Harmony.CreateAndPatchAll(typeof(StructureTileRestoredPatch), PluginGuid + ".tile-restored");
@@ -181,42 +174,11 @@ public sealed class Plugin : BaseUnityPlugin
 
     private void OnDestroy()
     {
-        StructureSaveState.Shutdown();
-        SceneManager.sceneLoaded -= ClearPrefabFallbacks;
+        // Silverpine destroys BepInEx's bootstrap host on entering gameplay.
+        // The static save registration and scene hooks belong to the process,
+        // not this short-lived component. Do not unregister them here.
         PrefabFallbackCache.Clear();
         prefabFallbacksIndexed = false;
-    }
-
-    internal static void LoadProtectedWorldTiles()
-    {
-        ProtectedWorldTiles.Clear();
-        foreach (string entry in ProtectedWorldTilesConfig.Value.Split(
-                     new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
-        {
-            string[] parts = entry.Split(',');
-            if (parts.Length == 2 &&
-                int.TryParse(parts[0], out int x) &&
-                int.TryParse(parts[1], out int y))
-            {
-                ProtectedWorldTiles.Add(new Vector2Int(x, y));
-            }
-        }
-    }
-
-    internal static void LoadBuildableWorldTiles()
-    {
-        BuildableWorldTiles.Clear();
-        foreach (string entry in BuildableWorldTilesConfig.Value.Split(
-                     new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
-        {
-            string[] parts = entry.Split(',');
-            if (parts.Length == 2 &&
-                int.TryParse(parts[0], out int x) &&
-                int.TryParse(parts[1], out int y))
-            {
-                BuildableWorldTiles.Add(new Vector2Int(x, y));
-            }
-        }
     }
 
     internal static void ProtectImportedPositions(

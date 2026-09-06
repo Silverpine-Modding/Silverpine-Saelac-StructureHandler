@@ -50,6 +50,7 @@ internal static class StructureFileNormalizer
                     y = y,
                     z = item.z,
                     spriteVariantIndex = item.spriteVariantIndex,
+                    lockSpriteVariant = item.lockSpriteVariant,
                     hasMapZoneName = item.hasMapZoneName,
                     mapZoneName = item.mapZoneName,
                     components = (item.components ??

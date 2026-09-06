@@ -367,4 +367,313 @@ Test("Planning outside a real structure never expands its import footprint", () 
     Check(parts.Count == 1 && parts[(0, 0)].objects.Count == 1);
     Check(parts[(0, 0)].planningTiles.Count == 0);
 });
+Test("Only objects not covered by native saving get supplemental records", () =>
+{
+    Check(StructurePersistenceLedger.NeedsSupplemental(false, true, false)); // plain dirt
+    Check(StructurePersistenceLedger.NeedsSupplemental(false, false, false)); // decorative sprite
+    Check(!StructurePersistenceLedger.NeedsSupplemental(true, true, false)); // furniture/tree
+    Check(!StructurePersistenceLedger.NeedsSupplemental(true, false, true)); // persistent native object
+    Check(StructurePersistenceLedger.NeedsSupplemental(true, false, false)); // unregistered loose root
+});
+StructureObject Scenery(string name, float x = 0, float y = 0, float z = 1) =>
+    new() { prefabName = name, x = x, y = y, z = z };
+Test("Replacement records retain the cleared original and supplemental import", () =>
+{
+    var ledger = new StructurePersistenceLedger();
+    var original = Scenery("prefab_original"); var placed = Scenery("prefab_dirt");
+    ledger.RecordReplacement(new[] { original }, new[] { placed });
+    Check(ledger.Cleared.Count == 1 && ledger.Objects.Count == 1);
+    Check(ledger.Cleared.ContainsKey(StructurePersistenceLedger.Key(original)));
+});
+Test("Replacing an imported tile does not turn that import into baseline scenery", () =>
+{
+    var ledger = new StructurePersistenceLedger();
+    var original = Scenery("prefab_original"); var first = Scenery("prefab_first"); var second = Scenery("prefab_second");
+    ledger.RecordReplacement(new[] { original }, new[] { first });
+    ledger.RecordReplacement(new[] { first }, new[] { second });
+    Check(ledger.Cleared.Count == 1 && ledger.Objects.Count == 1);
+    Check(!ledger.Cleared.ContainsKey(StructurePersistenceLedger.Key(first)));
+    Check(ledger.Objects.ContainsKey(StructurePersistenceLedger.Key(second)));
+});
+Test("Multiple layers and fractional furniture anchors do not share replacement keys", () =>
+{
+    Check(StructurePersistenceLedger.Key(Scenery("p", z: 0)) != StructurePersistenceLedger.Key(Scenery("p", z: 1)));
+    Check(StructurePersistenceLedger.Key(Scenery("p", x: 0.25f)) != StructurePersistenceLedger.Key(Scenery("p", x: 0.5f)));
+});
+Test("Refreshing moved supplemental scenery removes its previous spawn point", () =>
+{
+    var ledger = new StructurePersistenceLedger(); var first = Scenery("p", 0);
+    ledger.RecordReplacement(Array.Empty<StructureObject>(), new[] { first });
+    var moved = Scenery("p", 4); moved.signMessage = "Edited after import";
+    ledger.Move(StructurePersistenceLedger.Key(first), moved);
+    Check(ledger.Objects.Count == 1 && ledger.Objects.Values.Single().x == 4);
+    Check(ledger.Objects.Values.Single().signMessage == "Edited after import");
+});
+Test("A removed supplemental object is not recreated from the historical export", () =>
+{
+    var ledger = new StructurePersistenceLedger(); var item = Scenery("p");
+    ledger.RecordReplacement(Array.Empty<StructureObject>(), new[] { item });
+    ledger.Objects.Remove(StructurePersistenceLedger.Key(item));
+    var restored = new StructurePersistenceLedger(); restored.Restore(ledger.Objects.Values, ledger.Cleared.Values);
+    Check(restored.Objects.Count == 0);
+});
+Test("Intentional regeneration clears only that world tile's terrain and clearance", () =>
+{
+    var ledger = new StructurePersistenceLedger();
+    ledger.RecordReplacement(new[] { Scenery("original", 0), Scenery("original", -100) },
+        new[] { Scenery("import", 0), Scenery("import", -100) });
+    ledger.ClearWhere(item => TileOf(item.x, item.y) == (0, 0));
+    Check(ledger.Objects.Count == 1 && ledger.Cleared.Count == 1);
+    Check(ledger.Objects.Values.Single().x == -100 && ledger.Cleared.Values.Single().x == -100);
+});
+Test("Loading another save replaces rather than merges terrain history", () =>
+{
+    var ledger = new StructurePersistenceLedger();
+    ledger.RecordReplacement(new[] { Scenery("old_base") }, new[] { Scenery("old_import") });
+    ledger.Restore(new[] { Scenery("other_save", 100) }, null);
+    Check(ledger.Cleared.Count == 0 && ledger.Objects.Count == 1);
+    Check(ledger.Objects.Values.Single().prefabName == "other_save");
+    ledger.Reset(); Check(ledger.Objects.Count == 0 && ledger.Cleared.Count == 0);
+});
+Test("A version-1 save has empty supplemental state instead of invented objects", () =>
+{
+    var ledger = new StructurePersistenceLedger(); ledger.Restore(null, null);
+    Check(ledger.Objects.Count == 0 && ledger.Cleared.Count == 0);
+});
+Test("Malformed supplemental state does not partially replace recoverable records", () =>
+{
+    var ledger = new StructurePersistenceLedger();
+    ledger.RecordReplacement(Array.Empty<StructureObject>(), new[] { Scenery("keep") });
+    Throws<InvalidDataException>(() => ledger.Restore(new[] { Scenery("new") }, new[] { Scenery("bad", float.NaN) }));
+    Check(ledger.Objects.Count == 1 && ledger.Objects.Values.Single().prefabName == "keep");
+});
+Test("Restoring an import rollback reinstates terrain and its original clearance", () =>
+{
+    var ledger = new StructurePersistenceLedger();
+    ledger.RecordReplacement(new[] { Scenery("base") }, new[] { Scenery("old") });
+    var objects = ledger.Objects.Values.ToArray(); var cleared = ledger.Cleared.Values.ToArray();
+    ledger.RecordReplacement(new[] { Scenery("old") }, new[] { Scenery("failed_new") });
+    ledger.Restore(objects, cleared);
+    Check(ledger.Objects.Values.Single().prefabName == "old");
+    Check(ledger.Cleared.Values.Single().prefabName == "base");
+});
+Test("Discarded imported scenery in free pools is excluded from native saving", () =>
+{
+    var candidates = new HashSet<string> { "tree", "floor", "grass" };
+    NativeSavePolicy.RemoveReleased(candidates, new[] { new[] { "tree", "grass" } },
+        new HashSet<string> { "tree", "grass" }, name => name == "floor");
+    Check(candidates.SetEquals(new[] { "floor" }));
+});
+Test("Unrelated pooled scenery and deliberately inactive objects remain untouched", () =>
+{
+    var candidates = new HashSet<string> { "unrelated-pool-tree", "inactive-furniture", "discarded-tree" };
+    NativeSavePolicy.RemoveReleased(candidates, new[] { new[] { "unrelated-pool-tree", "discarded-tree" } },
+        new HashSet<string> { "discarded-tree", "inactive-furniture" }, _ => false);
+    Check(candidates.SetEquals(new[] { "unrelated-pool-tree", "inactive-furniture" }));
+});
+Test("A reclaimed object is saved again and stale active stack entries are not removed", () =>
+{
+    var candidates = new HashSet<string> { "reused-tree", "active-tree" };
+    var discarded = new HashSet<string> { "reused-tree", "active-tree" };
+    discarded.Remove("reused-tree"); // ObjectPool.Claim postfix
+    NativeSavePolicy.RemoveReleased(candidates, new[] { new[] { "reused-tree", "active-tree" } },
+        discarded, name => name == "active-tree");
+    Check(candidates.Count == 2);
+});
+Test("Native seasonal snapshots are recognized across export and import seasons", () =>
+{
+    IReadOnlyList<string>[] seasons = { new[] { "spring0", "spring1" }, new[] { "summer0", "summer1", "summer2" } };
+    Check(NativeSavePolicy.IsCapturedSeasonalVariant(5, "spring1", false, seasons));
+    Check(NativeSavePolicy.IsCapturedSeasonalVariant(5, "summer2", false, seasons));
+    Check(!NativeSavePolicy.IsCapturedSeasonalVariant(5, "summer1", false, seasons));
+});
+Test("Explicit fixed seasonal sprites and missing native state retain fallback support", () =>
+{
+    IReadOnlyList<string>[] seasons = { Array.Empty<string>(), new[] { "spring" } };
+    Check(!NativeSavePolicy.IsCapturedSeasonalVariant(0, "spring", true, seasons));
+    Check(!NativeSavePolicy.IsCapturedSeasonalVariant(-1, "spring", false, seasons));
+    Check(!NativeSavePolicy.IsCapturedSeasonalVariant(0, "missing", false, seasons));
+});
+Test("Only extenders absent from the native prefab need companion support", () =>
+{
+    Check(!NativeSavePolicy.NeedsExtenderOverride(true, true));
+    Check(NativeSavePolicy.NeedsExtenderOverride(true, false));
+    Check(!NativeSavePolicy.NeedsExtenderOverride(false, false));
+    Check(!NativeSavePolicy.NeedsExtenderOverride(false, true));
+});
+Test("Already unused grass at imported coordinates is filtered without an instance marker", () =>
+{
+    var candidates = new HashSet<string> { "rock", "old-grass", "neighbor-grass" };
+    NativeSavePolicy.RemoveReleased(candidates, new[] { new[] { "old-grass", "neighbor-grass" } },
+        new HashSet<string>(), name => name == "rock", name => name == "old-grass" || name == "rock");
+    Check(candidates.SetEquals(new[] { "rock", "neighbor-grass" }));
+});
+Test("Active deconstructed ground and inactive non-pool scenery survive footprint filtering", () =>
+{
+    var candidates = new HashSet<string> { "restored-dirt", "reused-grass", "dormant-object", "unused-grass" };
+    NativeSavePolicy.RemoveReleased(candidates, new[] { new[] { "reused-grass", "unused-grass" } },
+        new HashSet<string>(), name => name == "restored-dirt" || name == "reused-grass", _ => true);
+    Check(candidates.SetEquals(new[] { "restored-dirt", "reused-grass", "dormant-object" }));
+});
+Test("Imported cells survive capture and restore without widening to a whole world region", () =>
+{
+    var footprint = new ImportFootprint(); footprint.Record(new[] { (47, 14), (47, 14), (-40, 35) });
+    var other = new ImportFootprint(); other.Restore(ImportFootprint.Read(footprint.Capture()));
+    Check(other.Capture().Count == 2 && other.Contains(47, 14) && other.Contains(-40, 35));
+    Check(!other.Contains(48, 14));
+});
+Test("Loading another save resets the footprint instead of merging old imported cells", () =>
+{
+    var footprint = new ImportFootprint(); footprint.Record(new[] { (1, 1) });
+    footprint.Restore(ImportFootprint.Read(new[] { new StructurePosition { x = 10, y = 10 } }));
+    Check(!footprint.Contains(1, 1) && footprint.Contains(10, 10));
+    footprint.Reset(); Check(footprint.Capture().Count == 0);
+    footprint.Restore(ImportFootprint.Read(null)); Check(footprint.Capture().Count == 0);
+});
+Test("Native tile regeneration clears the correct footprint boundaries only", () =>
+{
+    var footprint = new ImportFootprint(); footprint.Record(new[] { (-51, 0), (-50, 0), (49, 0), (50, 0) });
+    footprint.ClearWorldTile(0, 0);
+    Check(footprint.Contains(-51, 0) && footprint.Contains(50, 0));
+    Check(!footprint.Contains(-50, 0) && !footprint.Contains(49, 0));
+});
+Test("Failed imports restore their previous footprint snapshot", () =>
+{
+    var footprint = new ImportFootprint(); footprint.Record(new[] { (1, 1) }); var saved = footprint.Capture();
+    Throws<InvalidDataException>(() => ImportTransaction.Execute(() =>
+    {
+        footprint.Record(new[] { (2, 2) }); throw new InvalidOperationException("failure");
+    }, () => footprint.Restore(ImportFootprint.Read(saved)), "footprint"));
+    Check(footprint.Contains(1, 1) && !footprint.Contains(2, 2));
+});
+Test("Malformed footprint data is rejected before old state is replaced", () =>
+{
+    var footprint = new ImportFootprint(); footprint.Record(new[] { (1, 1) });
+    Throws<InvalidDataException>(() => footprint.Restore(ImportFootprint.Read(new[] { new StructurePosition { x = int.MinValue } })));
+    Check(footprint.Contains(1, 1));
+});
+Test("Destination ground uses actual dirt or water rather than exported default grass", () =>
+{
+    Check(DestinationGroundPolicy.Choose(new[] { ("prefab_tile_dirt_dry", false, (string?)null, 1f) }) == "prefab_tile_dirt_dry");
+    Check(DestinationGroundPolicy.Choose(new[] { ("prefab_tile_water", false, (string?)null, 1f) }) == "prefab_tile_water");
+});
+Test("Replacing or reimporting an existing floor inherits ground without resurrecting the floor", () =>
+{
+    Check(DestinationGroundPolicy.Choose(new[] {
+        ("prefab_tile_wood", true, (string?)"prefab_tile_dirt_dry", 1f),
+        ("prefab_tile_grass", false, (string?)null, 1f)
+    }) == "prefab_tile_dirt_dry");
+});
+Test("Missing destination ground is not silently replaced with a default", () =>
+{
+    Check(DestinationGroundPolicy.Choose(Array.Empty<(string, bool, string?, float)>()) == null);
+    Check(DestinationGroundPolicy.Choose(new[] { ("prefab_tile_wood", true, (string?)null, 1f) }) == null);
+});
+Test("Portable exports omit source ground history but retain zone and other component data", () =>
+{
+    var file = new StructureFile();
+    file.supportingTerrain.Add(new SupportingTerrain { components = new() {
+        new StructureComponent { type = "GrassTileHandler, Assembly-CSharp", dataBase64 = "old-ground" },
+        new StructureComponent { type = "MapZone, Assembly-CSharp", dataBase64 = "zone" }
+    }});
+    file.objects.Add(new StructureObject { components = new() {
+        new StructureComponent { type = "GrassTileHandler, Assembly-CSharp", dataBase64 = "old-ground" },
+        new StructureComponent { type = "Mod.GrassTileHandler, Example", dataBase64 = "custom" }
+    }});
+    DestinationGroundPolicy.StripExportedHistory(file);
+    Check(file.supportingTerrain.Single().components.Single().dataBase64 == "zone");
+    Check(file.objects.Single().components.Single().dataBase64 == "custom");
+});
+(int X, int Y) CellOf(float x, float y) => ((int)Math.Round(x), (int)Math.Round(y));
+foreach (string prefab in new[] {
+    "prefab_furniture_well", "prefab_furniture_bathtub", "prefab_furniture_bench_wooden",
+    "prefab_furniture_table_wood", "prefab_furniture_candle", "prefab_furniture_sign",
+    "prefab_furniture_towel_wall", "prefab_crop_turnip", "prefab_herb_lavender",
+    "prefab_ore_iron", "prefab_wall_wood", "prefab_wall_wood_door", "prefab_wall_rock_window"
+})
+{
+    Test($"Standalone {prefab} carries destination support instead of clearing a hole", () =>
+    {
+        var file = new StructureFile { objects = new() { new() { prefabName = prefab, x = 4, y = -3 } } };
+        var cells = DestinationSupportPolicy.GetUnreplacedCells(file, new[] { (4, -3) }, _ => true, CellOf);
+        Check(cells.SetEquals(new[] { (4, -3) }));
+        Check(file.supportingTerrain.Count == 0); // No destination history added to the portable JSON.
+    });
+}
+Test("An explicit floor replaces destination ground without keeping a hidden second floor", () =>
+{
+    var file = new StructureFile { supportingTerrain = new() { new() { prefabName = "prefab_tile_wood", x = 4, y = -3 } } };
+    Check(DestinationSupportPolicy.GetUnreplacedCells(file, new[] { (4, -3) }, _ => true, CellOf).Count == 0);
+});
+Test("Multicell objects retain destination support only at cells missing imported terrain", () =>
+{
+    var file = new StructureFile { supportingTerrain = new() { new() { prefabName = "prefab_tile_rock", x = 4, y = -3 } } };
+    var cells = DestinationSupportPolicy.GetUnreplacedCells(file, new[] { (4, -3), (5, -3), (5, -3) }, _ => true, CellOf);
+    Check(cells.SetEquals(new[] { (5, -3) }));
+    Check(!cells.Contains((6, -3)));
+});
+Test("Filtered water does not remove the destination support while bath water replaces it", () =>
+{
+    var file = new StructureFile { supportingTerrain = new() {
+        new() { prefabName = "prefab_tile_water", x = 4, y = -3 },
+        new() { prefabName = "prefab_tile_water_bathhouse", x = 5, y = -3 }
+    }};
+    var cells = DestinationSupportPolicy.GetUnreplacedCells(file, new[] { (4, -3), (5, -3) },
+        name => name != "prefab_tile_water", CellOf);
+    Check(cells.SetEquals(new[] { (4, -3) }));
+});
+Test("Raw tile objects also replace destination support using the importer's rounding", () =>
+{
+    var file = new StructureFile { objects = new() {
+        new() { prefabName = "PREFAB_TILE_ROCK", x = -2.5f, y = 3.5f }
+    }};
+    Check(DestinationSupportPolicy.GetUnreplacedCells(file, new[] { (-2, 4) }, _ => true, CellOf).Count == 0);
+});
+Test("Nonterrain supporting records cannot pretend to supply ground", () =>
+{
+    var file = new StructureFile { supportingTerrain = new() { new() { prefabName = "prefab_furniture_well", x = 4, y = -3 } } };
+    Check(DestinationSupportPolicy.GetUnreplacedCells(file, new[] { (4, -3) }, _ => true, CellOf).Contains((4, -3)));
+});
+Test("Queued import parts decide ground support from their own destination cells", () =>
+{
+    var file = new StructureFile { objects = new() {
+        new() { prefabName = "prefab_furniture_well", x = 0 },
+        new() { prefabName = "prefab_furniture_well", x = 100 }
+    }, supportingTerrain = new() { new() { prefabName = "prefab_tile_rock", x = 0 } } };
+    var parts = StructurePlans.Partition(file, TileOf, _ => true);
+    Check(DestinationSupportPolicy.GetUnreplacedCells(parts[(0, 0)], new[] { (0, 0) }, _ => true, CellOf).Count == 0);
+    Check(DestinationSupportPolicy.GetUnreplacedCells(parts[(1, 0)], new[] { (100, 0) }, _ => true, CellOf).Contains((100, 0)));
+});
+Test("Planning-only and empty imports never capture unrelated destination support", () =>
+{
+    var file = new StructureFile { planningTiles = new() { new() { x = 4, y = -3 } } };
+    Check(DestinationSupportPolicy.GetUnreplacedCells(file, Array.Empty<(int, int)>(), _ => true, CellOf).Count == 0);
+});
+Test("Carried plain ground retains its exact state through supplemental save restore and reimport", () =>
+{
+    var terrain = Scenery("prefab_tile_dirt_dry", 4, -3, 1);
+    terrain.hasMapZoneName = true; terrain.mapZoneName = "Courtyard";
+    terrain.spriteVariantIndex = 2; terrain.lockSpriteVariant = true;
+    terrain.components.Add(new StructureComponent { type = "ExampleGroundState", dataBase64 = "AQID" });
+    var ledger = new StructurePersistenceLedger();
+    ledger.RecordReplacement(new[] { terrain }, new[] { terrain });
+    ledger.RecordReplacement(new[] { terrain }, new[] { terrain });
+    var reloaded = new StructurePersistenceLedger(); reloaded.Restore(ledger.Objects.Values, ledger.Cleared.Values);
+    var kept = reloaded.Objects.Values.Single();
+    Check(kept.prefabName == "prefab_tile_dirt_dry" && kept.mapZoneName == "Courtyard");
+    Check(kept.spriteVariantIndex == 2 && kept.lockSpriteVariant && kept.components.Single().dataBase64 == "AQID");
+    Check(reloaded.Cleared.Count == 1 && reloaded.Objects.Count == 1);
+});
+Test("A failed import restores carried-ground persistence along with the original objects", () =>
+{
+    var ledger = new StructurePersistenceLedger();
+    var terrain = Scenery("prefab_tile_dirt_dry", 4, -3, 1);
+    var before = ledger.Objects.Values.ToArray(); var cleared = ledger.Cleared.Values.ToArray();
+    Throws<InvalidDataException>(() => ImportTransaction.Execute(() =>
+    {
+        ledger.RecordReplacement(new[] { terrain }, new[] { terrain });
+        throw new InvalidOperationException("Import failed after carrying ground");
+    }, () => ledger.Restore(before, cleared), "well and ground"));
+    Check(ledger.Objects.Count == 0 && ledger.Cleared.Count == 0);
+});
 Console.WriteLine($"{passed} regression tests passed.");
