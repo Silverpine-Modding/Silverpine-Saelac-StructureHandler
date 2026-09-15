@@ -35,20 +35,17 @@ internal static class WorldItemUpdateSpriteGuard
 internal static class StructureSaveLoadPatch
 {
     [HarmonyPriority(Priority.Last)]
-    private static void Prefix(string __0) => StructureSaveState.LegacySavePath = __0;
+    private static void Prefix(string __0)
+    {
+        StructureSaveState.LegacySavePath = __0;
+        TerrainRepair.RecordSavePath(__0);
+    }
 }
 
 [HarmonyPatch(typeof(SerializationManager), "GetGameObjectsForSerialization")]
 internal static class StructureReleasedPoolSavePatch
 {
     private static readonly FieldInfo FreePools = AccessTools.Field(typeof(ObjectPool), "freePools");
-    private static readonly HashSet<GameObject> DiscardedByImports = new();
-
-    internal static void MarkReleased(GameObject item)
-    {
-        if (item != null && !item.activeSelf) DiscardedByImports.Add(item);
-    }
-    internal static void MarkClaimed(GameObject item) => DiscardedByImports.Remove(item);
 
     [HarmonyPriority(Priority.Last)]
     private static void Postfix(HashSet<GameObject> __result)
@@ -56,32 +53,20 @@ internal static class StructureReleasedPoolSavePatch
         // Native global collection includes inactive objects. Release removes
         // scenery from Turfs but leaves it in these stacks, so without this
         // filter a save resurrects the discarded grass/trees on next load.
-        // Also catch copies already sitting unused in the pool before import,
-        // including scenery released during a previous load in this session.
+        // Native loading reuses instances at unrelated coordinates. Free-pool
+        // membership, not an old position or import marker, determines liveness.
         // Never remove active restored ground or items outside the free pools.
-        DiscardedByImports.RemoveWhere(item => item == null);
         var pools = (Dictionary<GameObject, Stack<GameObject>>)FreePools.GetValue(null);
-        NativeSavePolicy.RemoveReleased(__result, pools.Values, DiscardedByImports,
-            item => item != null && item.activeInHierarchy,
-            item =>
-            {
-                if (item == null) return false;
-                var cell = item.transform.GetVector2IntPosition();
-                return StructureSaveState.ImportedCells.Contains(cell.x, cell.y);
-            });
+        NativeSavePolicy.RemoveReleased(__result, pools.Values,
+            item => item != null && item.activeInHierarchy);
     }
-}
-
-[HarmonyPatch(typeof(ObjectPool), nameof(ObjectPool.Claim))]
-internal static class StructurePoolClaimPatch
-{
-    private static void Postfix(GameObject __result) => StructureReleasedPoolSavePatch.MarkClaimed(__result);
 }
 
 [HarmonyPatch(typeof(SerializationManager), nameof(SerializationManager.Save))]
 internal static class StructurePrepareNativeSavePatch
 {
     private static void Prefix() => StructureSaveState.PrepareNativeSave();
+    private static void Postfix(string __0) => TerrainRepair.RecordSavePath(__0);
 }
 
 [HarmonyPatch(typeof(GrassTileHandler), nameof(GrassTileHandler.OnDeconstructed))]

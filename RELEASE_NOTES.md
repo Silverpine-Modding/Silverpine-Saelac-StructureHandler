@@ -1,4 +1,4 @@
-# Structure Handler 1.2.6
+# Structure Handler 1.2.8
 
 Created by **Saelac and ChatGPT**.
 
@@ -6,7 +6,7 @@ Created by **Saelac and ChatGPT**.
 
 - Silverpine 1.7.3 and BepInEx 5.
 - **[ModdingTools 1.10.0 or newer](https://github.com/Silverpine-Modding/Silverpine-Saelac-Modding-Tools/releases)** must be installed separately. This requirement is enforced by the plugin.
-- Close the game. Extract `StructureHandler-1.2.6.zip` into
+- Close the game. Extract `StructureHandler-1.2.8.zip` into
   `BepInEx/plugins/StructureHandler/`, replacing the previous DLL, or replace
   that DLL with the standalone download. Do not keep a second copy elsewhere
   under `BepInEx/plugins`.
@@ -14,7 +14,38 @@ Created by **Saelac and ChatGPT**.
   `.sav.moddingtools` companion alongside its `.sav` file when copying or
   restoring saves. This download does not contain or update ModdingTools.
 
-## New in 1.2.6
+## New in 1.2.8
+
+- Fix false "ambiguous" results for duplicate grass beside terrain with native
+  seasonal overgrowth. Only edging actually owned by the native grass component,
+  with the expected visual-only component set and child hierarchy, is accepted.
+  Independently placed edging and unknown/mod-added children remain protected.
+- Verified edging no longer counts as a separate terrain layer. The game's
+  normal release cleanup removes only an excess grass copy's owned edging.
+- The repair dialog and coordinate report now explain why any cells are skipped.
+  Backups and confirmation remain required. No save is automatically repaired,
+  and no ModdingTools update is needed.
+
+## Retained from 1.2.7
+
+- **Prevent neighboring grass duplication on save/load:** exclude unused,
+  inactive reuse-pool entries from native saves regardless of stale coordinates.
+  The filter no longer relies on an import footprint or instance-discard markers.
+  It does not delete live surroundings, intentionally inactive non-pool content,
+  or change import replacement bounds.
+- **Repair Duplicate Terrain:** new in-game Structure Handler action previews
+  the number of redundant grass copies and affected loaded cells, then asks for
+  confirmation. It keeps one existing plain grass tile per safe cell. Mixed
+  terrain layers, named zones, nonstandard depth, and modified/unknown state are
+  skipped; furniture, vegetation, trees, and other terrain types are not removed.
+- Existing saves receive a read-only detection notice, not automatic deletion.
+  Repair requires a normal save and a successful disk backup plus fresh checkpoint
+  (including unsaved progress). Backups and coordinate reports are kept in
+  `Saves/StructureHandler Repair Backups/`, with restoration instructions.
+- Save normally after repair to retain the correction. No original save is
+  overwritten by the repair action. No ModdingTools update is required.
+
+## Retained from 1.2.6
 
 - **Ground underneath editor objects:** imports carry over the destination's
   actual terrain wherever the JSON supplies no replacement terrain. This fixes
@@ -29,7 +60,7 @@ Created by **Saelac and ChatGPT**.
   prefabs and previously imported supplemental objects even without native
   serialization. Character and persistent-object exclusions remain in place.
 
-## Also included since the previous GitHub release (1.2.2)
+## Earlier fixes retained
 
 - Save registrations and gameplay hooks survive destruction of Silverpine's
   initial plugin host during bootstrap.
@@ -37,9 +68,8 @@ Created by **Saelac and ChatGPT**.
   supplemental records. Cleared nonserialized originals are tracked so they
   do not return over imported structures. Live edits and removals update these
   records instead of replaying historical exports.
-- Unused pooled trees/grass discarded by imports, including older inactive
-  pool entries at imported coordinates, are filtered out of native saves.
-  Active objects are not blacklisted. Exact imported-cell footprints persist
+- Unused pooled trees/grass are filtered out of native saves, now without a
+  coordinate restriction. Active objects are not blacklisted. Exact imported-cell footprints persist
   per save and are cleared when their world tile is intentionally regenerated.
 - Global tile-protection/buildability configuration is no longer copied into
   unrelated saves. Existing per-save choices remain intact.
@@ -55,10 +85,9 @@ Created by **Saelac and ChatGPT**.
 ## Important upgrade notes
 
 - This update does not automatically reimport structures or guess which active
-  trees are unwanted. Older saves lack reliable import footprints. To correct
-  affected areas, back up first, reimport only the affected structures once,
-  save to a **new slot**, then reload and check the result. Reimport replaces
-  objects and their contents/state inside its footprint.
+  trees are unwanted. Use **Repair Duplicate Terrain** for redundant plain grass
+  ground. If a cell is skipped as ambiguous, inspect it manually; do not assume
+  all stacked objects are redundant. Repair is limited to currently loaded areas.
 - Already-missing ground cannot be recovered from an empty destination. Use a
   save from before the damaged import, or add the intended supporting terrain
   in the editor before reimporting.
@@ -71,11 +100,11 @@ Created by **Saelac and ChatGPT**.
 ## Verification and contents
 
 - Release build: zero warnings and errors.
-- All **97 Unity-independent regression tests** pass.
-- All **7 native serialization checks** and **6 compiled hook/lifecycle checks**
+- All **115 Unity-independent regression tests** pass.
+- All **7 native serialization checks** and **9 compiled hook/lifecycle checks**
   pass. Real gameplay, rendering, and complete save/load behavior still need
   in-game verification; automated checks do not substitute for that test.
 - Downloads contain only the plugin and documentation, without proprietary
   game assemblies, dependencies, configuration, save data, or debug symbols.
 
-See the [README](https://github.com/Silverpine-Modding/Silverpine-Saelac-StructureHandler/blob/v1.2.6/README.md) for detailed behavior and build instructions.
+See the included README for detailed behavior, backup restoration, and build instructions.

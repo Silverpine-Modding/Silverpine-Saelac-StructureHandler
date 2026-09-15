@@ -1341,7 +1341,6 @@ internal static class StructureTransfer
             if (ObjectPool.IsObjectPoolTarget(gameObject))
             {
                 ObjectPool.Release(gameObject);
-                StructureReleasedPoolSavePatch.MarkReleased(gameObject);
             }
             else
             {

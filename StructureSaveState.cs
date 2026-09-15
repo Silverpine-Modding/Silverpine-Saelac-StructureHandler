@@ -45,6 +45,7 @@ internal static class StructureSaveState
     private static void Reset()
     {
         loadEpoch++;
+        TerrainRepair.Reset();
         StructureTerrainPersistence.Reset();
         Plugin.ProtectedWorldTiles.Clear();
         Plugin.BuildableWorldTiles.Clear();
@@ -166,6 +167,7 @@ internal static class StructureSaveState
             }
             RestoreAppearances();
             ResourceRegeneration.ProcessLoadedTile();
+            TerrainRepair.CheckAfterLoad();
         }
         catch (Exception exception)
         {

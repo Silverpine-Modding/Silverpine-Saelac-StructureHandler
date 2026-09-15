@@ -10,13 +10,11 @@ internal static class NativeSavePolicy
     // A disabled object can be intentional content. Only unused pool entries
     // are disposable; never filter arbitrary inactive scene objects by name.
     internal static void RemoveReleased<T>(ISet<T> candidates,
-        IEnumerable<IEnumerable<T>> freePools, ISet<T> discardedByImports, Func<T, bool> isActive,
-        Func<T, bool>? isAtImportedCell = null)
+        IEnumerable<IEnumerable<T>> freePools, Func<T, bool> isActive)
     {
         foreach (var pool in freePools)
             foreach (var item in pool)
-                if (!isActive(item) &&
-                    (discardedByImports.Contains(item) || isAtImportedCell?.Invoke(item) == true))
+                if (!isActive(item))
                     candidates.Remove(item);
     }
 

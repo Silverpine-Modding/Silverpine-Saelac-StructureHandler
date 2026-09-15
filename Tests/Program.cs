@@ -461,23 +461,20 @@ Test("Discarded imported scenery in free pools is excluded from native saving", 
 {
     var candidates = new HashSet<string> { "tree", "floor", "grass" };
     NativeSavePolicy.RemoveReleased(candidates, new[] { new[] { "tree", "grass" } },
-        new HashSet<string> { "tree", "grass" }, name => name == "floor");
+        name => name == "floor");
     Check(candidates.SetEquals(new[] { "floor" }));
 });
-Test("Unrelated pooled scenery and deliberately inactive objects remain untouched", () =>
+Test("All unused pool entries are excluded but deliberately inactive non-pool objects remain", () =>
 {
     var candidates = new HashSet<string> { "unrelated-pool-tree", "inactive-furniture", "discarded-tree" };
     NativeSavePolicy.RemoveReleased(candidates, new[] { new[] { "unrelated-pool-tree", "discarded-tree" } },
-        new HashSet<string> { "discarded-tree", "inactive-furniture" }, _ => false);
-    Check(candidates.SetEquals(new[] { "unrelated-pool-tree", "inactive-furniture" }));
+        _ => false);
+    Check(candidates.SetEquals(new[] { "inactive-furniture" }));
 });
 Test("A reclaimed object is saved again and stale active stack entries are not removed", () =>
 {
     var candidates = new HashSet<string> { "reused-tree", "active-tree" };
-    var discarded = new HashSet<string> { "reused-tree", "active-tree" };
-    discarded.Remove("reused-tree"); // ObjectPool.Claim postfix
-    NativeSavePolicy.RemoveReleased(candidates, new[] { new[] { "reused-tree", "active-tree" } },
-        discarded, name => name == "active-tree");
+    NativeSavePolicy.RemoveReleased(candidates, new[] { new[] { "active-tree" } }, _ => true);
     Check(candidates.Count == 2);
 });
 Test("Native seasonal snapshots are recognized across export and import seasons", () =>
@@ -501,18 +498,18 @@ Test("Only extenders absent from the native prefab need companion support", () =
     Check(!NativeSavePolicy.NeedsExtenderOverride(false, false));
     Check(!NativeSavePolicy.NeedsExtenderOverride(false, true));
 });
-Test("Already unused grass at imported coordinates is filtered without an instance marker", () =>
+Test("Unused grass at neighboring coordinates is filtered without import history", () =>
 {
     var candidates = new HashSet<string> { "rock", "old-grass", "neighbor-grass" };
     NativeSavePolicy.RemoveReleased(candidates, new[] { new[] { "old-grass", "neighbor-grass" } },
-        new HashSet<string>(), name => name == "rock", name => name == "old-grass" || name == "rock");
-    Check(candidates.SetEquals(new[] { "rock", "neighbor-grass" }));
+        name => name == "rock");
+    Check(candidates.SetEquals(new[] { "rock" }));
 });
-Test("Active deconstructed ground and inactive non-pool scenery survive footprint filtering", () =>
+Test("Active deconstructed ground and inactive non-pool scenery survive pool filtering", () =>
 {
     var candidates = new HashSet<string> { "restored-dirt", "reused-grass", "dormant-object", "unused-grass" };
     NativeSavePolicy.RemoveReleased(candidates, new[] { new[] { "reused-grass", "unused-grass" } },
-        new HashSet<string>(), name => name == "restored-dirt" || name == "reused-grass", _ => true);
+        name => name == "restored-dirt" || name == "reused-grass");
     Check(candidates.SetEquals(new[] { "restored-dirt", "reused-grass", "dormant-object" }));
 });
 Test("Imported cells survive capture and restore without widening to a whole world region", () =>
@@ -675,5 +672,153 @@ Test("A failed import restores carried-ground persistence along with the origina
         throw new InvalidOperationException("Import failed after carrying ground");
     }, () => ledger.Restore(before, cleared), "well and ground"));
     Check(ledger.Objects.Count == 0 && ledger.Cleared.Count == 0);
+});
+Test("Loading fewer grass records never saves the spare at an untouched coordinate", () =>
+{
+    foreach (var release in new[] { new[] { 0, 1, 2 }, new[] { 1, 0, 2 } })
+    {
+        var positions = new[] { 0, 1, 2 }; var active = new bool[3]; var pool = new Stack<int>(release);
+        foreach (int destination in new[] { 0, 1 }) { int id = pool.Pop(); positions[id] = destination; active[id] = true; }
+        var candidates = new HashSet<int> { 0, 1, 2 };
+        NativeSavePolicy.RemoveReleased(candidates, new[] { pool }, id => active[id]);
+        Check(candidates.Count == 2 && candidates.Select(id => positions[id]).Distinct().Count() == 2);
+        Check(pool.Count == 1); // Filtering does not mutate the pool or live world.
+    }
+});
+TerrainRepairPolicy.Item Grass(int id, float x = 48, float y = 35, float z = 1, bool safe = true) =>
+    new() { Id = id, X = x, Y = y, Z = z, Prefab = TerrainRepairPolicy.Grass, Safe = safe, Order = id };
+Test("Repair keeps exactly one existing grass at an untouched cell", () =>
+{
+    var items = new[] { Grass(1), Grass(2), Grass(3) };
+    var plan = TerrainRepairPolicy.Build(items);
+    Check(plan.Groups.Count == 1 && plan.RemoveCount == 2 && plan.Groups[0].Keep.Id == 1);
+    Check(plan.Skipped.Count == 0 && items.Length == 3);
+});
+Test("Repair plan is independent of scene enumeration order", () =>
+{
+    var items = new[] { Grass(4, -4), Grass(1), Grass(2), Grass(3, -4) };
+    Check(TerrainRepairPolicy.Build(items).Signature == TerrainRepairPolicy.Build(items.Reverse()).Signature);
+});
+Test("Repair is idempotent after excess grass is removed", () =>
+{
+    var plan = TerrainRepairPolicy.Build(new[] { Grass(1), Grass(2), Grass(3, 2) });
+    Check(TerrainRepairPolicy.Build(new[] { plan.Groups[0].Keep, Grass(3, 2) }).RemoveCount == 0);
+});
+Test("Named-zone or mod-modified candidates block the whole cell", () =>
+{
+    var plan = TerrainRepairPolicy.Build(new[] { Grass(1), Grass(2, safe: false), Grass(3) });
+    Check(plan.RemoveCount == 0 && plan.Skipped.Count == 1);
+});
+Test("Floor water dirt and other terrain layers prevent ambiguous grass removal", () =>
+{
+    foreach (string name in new[] { "prefab_tile_rock", "prefab_tile_wood", "prefab_tile_water", "prefab_tile_dirt_dry" })
+    {
+        var layer = Grass(3); layer.Prefab = name;
+        var plan = TerrainRepairPolicy.Build(new[] { Grass(1), Grass(2), layer });
+        Check(plan.RemoveCount == 0 && plan.Skipped.Count == 1);
+    }
+});
+Test("Unverified overgrowth prefabs are not assumed to be disposable edging", () =>
+{
+    var decoration = Grass(3); decoration.Prefab = "prefab_tile_grass_overgrowth";
+    var plan = TerrainRepairPolicy.Build(new[] { Grass(1), Grass(2), decoration });
+    Check(plan.RemoveCount == 0 && plan.Skipped.Single().Reasons.Contains("Other terrain layers share the cell"));
+});
+Test("Unsafe runtime grass state explains why a cell was skipped", () =>
+{
+    var a = Grass(1, safe: false); var b = Grass(2, safe: false);
+    a.UnsafeReason = b.UnsafeReason = "Unrecognized content attached to grass";
+    var plan = TerrainRepairPolicy.Build(new[] { a, b });
+    Check(plan.RemoveCount == 0 && plan.Skipped.Single().Reasons.Count == 1);
+    Check(plan.SkipSummary == "Unrecognized content attached to grass: 1 cell(s).");
+});
+Test("Skipped-cell reasons count cells rather than duplicate objects", () =>
+{
+    var a = Grass(1, safe: false); var b = Grass(2, safe: false); var c = Grass(3, x: 40, safe: false);
+    a.UnsafeReason = b.UnsafeReason = c.UnsafeReason = "Named or missing grass zone";
+    var plan = TerrainRepairPolicy.Build(new[] { a, b, c, Grass(4, x: 40) });
+    Check(plan.Skipped.Count == 2 && plan.SkipSummary == "Named or missing grass zone: 2 cell(s).");
+});
+Test("Multiple independent ambiguity reasons are preserved", () =>
+{
+    var a = Grass(1, safe: false); a.UnsafeReason = "Named or missing grass zone";
+    var floor = Grass(3); floor.Prefab = "prefab_tile_rock";
+    var plan = TerrainRepairPolicy.Build(new[] { a, Grass(2, z: 0.5f), floor });
+    Check(plan.RemoveCount == 0 && plan.Skipped.Single().Reasons.Count == 3);
+    Check(plan.SkipSummary.Contains("Nonstandard terrain coordinates or depth"));
+});
+Test("A new unsafe child invalidates a previously approved repair", () =>
+{
+    var first = TerrainRepairPolicy.Build(new[] { Grass(1), Grass(2) });
+    var modified = Grass(2, safe: false); modified.UnsafeReason = "Unrecognized content attached to grass";
+    var second = TerrainRepairPolicy.Build(new[] { Grass(1), modified });
+    Check(first.Signature != second.Signature && second.RemoveCount == 0);
+});
+Test("Different Z or nonstandard depth and fractional coordinates are not flattened", () =>
+{
+    foreach (var unusual in new[] { Grass(2, z: 0.5f), Grass(2, z: float.NaN) })
+        Check(TerrainRepairPolicy.Build(new[] { Grass(1), unusual }).RemoveCount == 0);
+    Check(TerrainRepairPolicy.Build(new[] { Grass(1, x: 1.5f), Grass(2, x: 1.5f) }).RemoveCount == 0);
+});
+Test("Repeated references to the same terrain object are not deleted as duplicates", () =>
+{
+    var one = Grass(1); Check(TerrainRepairPolicy.Build(new[] { one, one }).RemoveCount == 0);
+});
+Test("Repair never removes other prefab families even if they stack", () =>
+{
+    foreach (string name in new[] { "prefab_tree_oak", "prefab_plant_grass", "prefab_furniture_bath", "prefab_tile_rock" })
+    {
+        var a = Grass(1); var b = Grass(2); a.Prefab = b.Prefab = name;
+        Check(TerrainRepairPolicy.Build(new[] { a, b }).RemoveCount == 0);
+    }
+});
+Test("Changing the retained object or removal set invalidates the repair signature", () =>
+{
+    var original = TerrainRepairPolicy.Build(new[] { Grass(1), Grass(2) });
+    var changed = TerrainRepairPolicy.Build(new[] { Grass(1), Grass(3) });
+    Check(original.Signature != changed.Signature);
+});
+Test("Moving the same objects to another cell invalidates an old confirmation", () =>
+{
+    var original = TerrainRepairPolicy.Build(new[] { Grass(1), Grass(2) });
+    var moved = TerrainRepairPolicy.Build(new[] { Grass(1, x: 20), Grass(2, x: 20) });
+    Check(original.Signature != moved.Signature);
+});
+Test("Backup preserves the existing save pair and captures unsaved state separately", () =>
+{
+    string root = Path.Combine(Path.GetTempPath(), "StructureHandler-repair-test-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    try
+    {
+        string source = Path.Combine(root, "slot.sav"); File.WriteAllText(source, "original-save");
+        File.WriteAllText(source + ".moddingtools", "original-companion");
+        File.WriteAllText(Path.ChangeExtension(source, ".savmeta"), "metadata");
+        string backup = TerrainRepairBackup.Create(source, Path.Combine(root, "backups"), path =>
+        {
+            Check(File.ReadAllText(Path.Combine(Path.GetDirectoryName(path)!, "original.sav")) == "original-save");
+            File.WriteAllText(path, "current-unsaved-progress"); File.WriteAllText(path + ".moddingtools", "checkpoint-companion");
+        });
+        Check(File.ReadAllText(source) == "original-save");
+        Check(File.ReadAllText(source + ".moddingtools") == "original-companion");
+        Check(File.ReadAllText(Path.Combine(backup, "original.savmeta")) == "metadata");
+        Check(File.ReadAllText(Path.Combine(backup, "before-repair.sav")) == "current-unsaved-progress");
+        Check(File.Exists(Path.Combine(backup, "RESTORE.txt")));
+    }
+    finally { Directory.Delete(root, true); }
+});
+Test("Missing source or failed checkpoint cannot authorize a repair", () =>
+{
+    string root = Path.Combine(Path.GetTempPath(), "StructureHandler-repair-test-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    try
+    {
+        string source = Path.Combine(root, "slot.sav"); bool called = false;
+        Throws<IOException>(() => TerrainRepairBackup.Create(source, root, _ => called = true)); Check(!called);
+        File.WriteAllText(source, "original-save");
+        Throws<IOException>(() => TerrainRepairBackup.Create(source, root, _ => throw new IOException("disk full")));
+        Throws<IOException>(() => TerrainRepairBackup.Create(source, root, _ => { }));
+        Check(File.ReadAllText(source) == "original-save");
+    }
+    finally { Directory.Delete(root, true); }
 });
 Console.WriteLine($"{passed} regression tests passed.");

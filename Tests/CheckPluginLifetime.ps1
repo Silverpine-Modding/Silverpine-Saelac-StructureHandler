@@ -33,8 +33,10 @@ try {
         if (-not ($references | Where-Object { $_ -match $expected })) { throw "$type.$method does not call $expected" }
     }
     Assert-MethodCalls 'StructureReleasedPoolSavePatch' 'Postfix' 'NativeSavePolicy::RemoveReleased'
-    Assert-MethodCalls 'StructureTransfer' 'RemoveGameObjects' 'StructureReleasedPoolSavePatch::MarkReleased'
-    Assert-MethodCalls 'StructurePoolClaimPatch' 'Postfix' 'StructureReleasedPoolSavePatch::MarkClaimed'
+    Assert-MethodCalls 'StructureSaveLoadPatch' 'Prefix' 'TerrainRepair::RecordSavePath'
+    Assert-MethodCalls 'StructurePrepareNativeSavePatch' 'Postfix' 'TerrainRepair::RecordSavePath'
+    Assert-MethodCalls 'StructureSaveState' 'Reset' 'TerrainRepair::Reset'
+    Assert-MethodCalls 'StructureSaveState' 'ProcessLoadedTile' 'TerrainRepair::CheckAfterLoad'
     Assert-MethodCalls 'StructurePrepareNativeSavePatch' 'Prefix' 'StructureSaveState::PrepareNativeSave'
     Assert-MethodCalls 'StructureSaveState' 'TrackAppearance' 'NativeAppearance::TryApply'
     Assert-MethodCalls 'StructureSaveState' 'PrepareNativeSave' 'StructureSaveState::RestoreAppearances'
@@ -86,12 +88,51 @@ try {
     Assert-MethodCalls 'DestinationGround' 'InstantiateRestoredGround' 'StructureTerrainPersistence::RecordRestoredGround'
     $awake = $plugin.Methods | Where-Object Name -eq 'Awake'
     $installed = @($awake.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.TypeReference] } | ForEach-Object { $_.Operand.Name })
-    foreach ($required in @('StructureReleasedPoolSavePatch', 'StructurePoolClaimPatch', 'StructurePrepareNativeSavePatch', 'StructureRestoredGroundPatch')) {
+    foreach ($required in @('StructureReleasedPoolSavePatch', 'StructurePrepareNativeSavePatch', 'StructureRestoredGroundPatch')) {
         if ($installed -notcontains $required) { throw "Missing startup patch: $required" }
     }
-    'PASS Compiled pool discard/reuse and pre-save appearance migration hooks are wired and installed.'
+    'PASS Compiled pool filtering, per-save repair detection, and save tracking hooks are wired and installed.'
+    $policy = $assembly.MainModule.Types | Where-Object FullName -eq 'StructureHandler.NativeSavePolicy'
+    if (($policy.Methods | Where-Object Name -eq 'RemoveReleased').Parameters.Count -ne 3) {
+        throw 'Pool saving still depends on coordinates or historical import markers.'
+    }
+    $repair = $assembly.MainModule.Types | Where-Object FullName -eq 'StructureHandler.TerrainRepair'
+    $applyCalls = @(($repair.Methods | Where-Object Name -eq 'Apply').Body.Instructions | Where-Object {
+        $_.Operand -is [Mono.Cecil.MethodReference]
+    } | ForEach-Object { $_.Operand.FullName })
+    $backupIndex = [Array]::FindIndex($applyCalls, [Predicate[object]] { param($call) $call -match 'TerrainRepairBackup::Create' })
+    $mutationIndex = [Array]::FindIndex($applyCalls, [Predicate[object]] { param($call) $call -match 'ImportTransaction::Execute' })
+    if ($backupIndex -lt 0 -or $mutationIndex -le $backupIndex) { throw 'Repair can mutate the world before a complete backup.' }
+    $checkCalls = @(($repair.Methods | Where-Object Name -eq 'CheckAfterLoad').Body.Instructions | Where-Object {
+        $_.Operand -is [Mono.Cecil.MethodReference]
+    } | ForEach-Object { $_.Operand.FullName })
+    if ($checkCalls | Where-Object { $_ -match '::Apply\(|RemoveGameObjects|::Release\(|::Save\(' }) {
+        throw 'Load-time repair detection must be read-only.'
+    }
+    'PASS Repair detection is read-only and confirmed repair creates its checkpoint before mutation.'
+    Assert-MethodCalls 'TerrainRepair' 'Inspect' 'TerrainRepairDecorations::IsNativeOvergrowth'
+    Assert-MethodCalls 'TerrainRepair' 'GrassSafetyReason' 'TerrainRepairDecorations::IsNativeOvergrowth'
+    Assert-MethodCalls 'TerrainRepairDecorations' 'IsNativeOvergrowth' 'List`1<UnityEngine.GameObject>::Contains'
+    Assert-MethodCalls 'TerrainRepairDecorations' 'IsNativeOvergrowth' 'HashSet`1<System.Type>::SetEquals'
+    Assert-MethodCalls 'TerrainRepairDecorations' 'IsNativeOvergrowth' 'Transform::get_parent'
+    Assert-MethodCalls 'TerrainRepairDecorations' 'IsNativeOvergrowth' 'Transform::get_childCount'
+    Assert-MethodCalls 'TerrainRepairDecorations' 'IsNativeOvergrowth' 'GameObject::GetComponent<OvergrowthTile>'
+    'PASS Native grass edging requires ownership, native components, and the correct child hierarchy in both repair scans.'
     $gameAssembly = [Mono.Cecil.AssemblyDefinition]::ReadAssembly((Join-Path $projectRoot '../../Silverpine_Data/Managed/Assembly-CSharp.dll'))
     try {
+        $overgrowth = $gameAssembly.MainModule.Types | Where-Object FullName -eq 'OvergrowthTile'
+        $owned = $overgrowth.Fields | Where-Object Name -eq 'instantiatedPrefabs'
+        $sourcePrefab = $overgrowth.Fields | Where-Object Name -eq 'overgrowthPrefab'
+        if ($owned.FieldType.FullName -ne 'System.Collections.Generic.List`1<UnityEngine.GameObject>' -or
+            $sourcePrefab.FieldType.FullName -ne 'UnityEngine.GameObject') {
+            throw 'The native overgrowth ownership fields changed; repair decoration matching requires review.'
+        }
+        $cleanupCalls = @(($overgrowth.Methods | Where-Object Name -eq 'OnObjectPoolDestroy').Body.Instructions |
+            Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] } | ForEach-Object { $_.Operand.FullName })
+        if (-not ($cleanupCalls | Where-Object { $_ -match 'OvergrowthTile::DestroyOvergrowth' })) {
+            throw 'Releasing native grass no longer removes its owned edging.'
+        }
+        'PASS Actual game exposes the expected overgrowth ownership and pool-release cleanup.'
         $handler = $gameAssembly.MainModule.Types | Where-Object FullName -eq 'GrassTileHandler'
         $deconstruct = $handler.Methods | Where-Object Name -eq 'OnDeconstructed'
         $instantiate = @($deconstruct.Body.Instructions | Where-Object {

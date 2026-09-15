@@ -3,7 +3,55 @@
 Adds Structure Handler controls to Silverpine's shared in-game **Mods** menu
 and a structure editor to the main-menu mod tools.
 
-Version **1.2.6** requires **ModdingTools 1.10.0 or newer**.
+Version **1.2.8** requires **ModdingTools 1.10.0 or newer**.
+
+## Native grass edging repair correction (1.2.8)
+
+- Normal seasonal grass edging no longer makes duplicate grass ground
+  unrepairable. The repair verifies that the native `OvergrowthTile` owns each
+  edging child and that it has only its normal visual components. An edging
+  prefab placed independently or an unknown/custom child is not exempted.
+- Verified edging is not counted as an additional ground layer. Releasing an
+  excess grass tile also invokes the game's normal cleanup for its own edging;
+  the retained grass and its edging remain intact.
+- Skipped cells now show specific safety reasons in the repair dialog and
+  coordinate report. Confirmation, backups, and protection of real mixed terrain,
+  named zones, custom components, plants, and furniture remain unchanged.
+
+## Duplicate terrain prevention and repair (1.2.7)
+
+- Native saves now exclude **all unused, inactive objects actually in the game's
+  reuse pools**, regardless of their old coordinates. Ordinary loading can leave
+  spare grass/trees outside an import's footprint. This replaces the narrower
+  filtering in 1.2.4/1.2.5; active objects and inactive non-pool content remain
+  saveable. It does not clear surrounding terrain or expand import boundaries.
+- A read-only check after loading/visiting a world tile notifies you when stacked
+  grass ground is detected. No terrain is removed automatically.
+- Open **Mods > Structure Handler > Repair Duplicate Terrain**. The confirmation
+  shows removable copies, affected loaded cells, and ambiguous cells to skip.
+  Confirm **Back Up and Repair** to keep one existing plain grass ground tile
+  per safe cell. Its current appearance is retained; an older duplicate's original
+  appearance cannot always be identified. Coordinates outside imports are included.
+- Repair is intentionally limited to native, unmodified, unnamed grass ground at
+  grid coordinates and Z=1. Mixed floor/water/dirt layers, different depths, named
+  zones, unregistered/modified grass, and unknown component state are skipped.
+  Furniture, plants, trees, and other terrain types are never removed by repair.
+- A normal save must exist and mod-save warnings must be resolved first. Before
+  removal, the plugin preserves the last disk save, its metadata/companion, and
+  creates a **fresh pre-repair checkpoint including unsaved progress**. If backup
+  creation fails, no repair runs. It rechecks the proposed objects before removal
+  and attempts rollback if removal fails.
+- Backups and a per-coordinate repair/skip report are stored under
+  `%USERPROFILE%/AppData/LocalLow/Three Eyes Software/Silverpine/Saves/StructureHandler Repair Backups/`.
+  Each uniquely named directory contains `RESTORE.txt`, the `original.sav` pair,
+  and the `before-repair.sav` checkpoint pair. These are not normal save slots.
+  Restore matching native/companion pairs with the game closed; never mix pairs.
+- **Save normally after repair**, preferably to a new slot. The plugin does not
+  overwrite the source save when repairing. Re-running repair is harmless when
+  no redundant grass remains. Unloaded wilderness tiles are checked when visited.
+
+The historical notes below describe older fixes; the pool and repair behavior
+above supersedes their coordinate-only filtering and reimport-only advice.
 
 ## Destination support for editor objects (1.2.6)
 

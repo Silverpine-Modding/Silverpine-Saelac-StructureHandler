@@ -27,7 +27,7 @@ public sealed class Plugin : BaseUnityPlugin
 {
     public const string PluginGuid = "renegadex.silverpine.customstructures";
     public const string PluginName = "Structure Handler";
-    public const string PluginVersion = "1.2.6";
+    public const string PluginVersion = "1.2.8";
     public const int EditorApiVersion = 2;
 
     internal static ManualLogSource Log = null!;
@@ -161,7 +161,6 @@ public sealed class Plugin : BaseUnityPlugin
             PluginGuid + ".base-shed-capture");
         Harmony.CreateAndPatchAll(typeof(StructureSaveLoadPatch), PluginGuid + ".save-load");
         Harmony.CreateAndPatchAll(typeof(StructureReleasedPoolSavePatch), PluginGuid + ".released-pool-save");
-        Harmony.CreateAndPatchAll(typeof(StructurePoolClaimPatch), PluginGuid + ".pool-claim");
         Harmony.CreateAndPatchAll(typeof(StructurePrepareNativeSavePatch), PluginGuid + ".prepare-native-save");
         Harmony.CreateAndPatchAll(typeof(StructureRestoredGroundPatch), PluginGuid + ".restored-ground");
         Harmony.CreateAndPatchAll(typeof(StructureTileEnteredPatch), PluginGuid + ".tile-entered");

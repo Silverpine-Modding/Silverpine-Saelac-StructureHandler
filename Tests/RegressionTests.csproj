@@ -20,6 +20,8 @@
     <Compile Include="..\PlanningTiles.cs" Link="PlanningTiles.cs" />
     <Compile Include="..\StructurePersistenceLedger.cs" Link="StructurePersistenceLedger.cs" />
     <Compile Include="..\NativeSavePolicy.cs" Link="NativeSavePolicy.cs" />
+    <Compile Include="..\TerrainRepairPolicy.cs" Link="TerrainRepairPolicy.cs" />
+    <Compile Include="..\TerrainRepairBackup.cs" Link="TerrainRepairBackup.cs" />
     <Compile Include="..\ImportFootprint.cs" Link="ImportFootprint.cs" />
     <Compile Include="..\DestinationGroundPolicy.cs" Link="DestinationGroundPolicy.cs" />
     <Compile Include="..\DestinationSupportPolicy.cs" Link="DestinationSupportPolicy.cs" />

@@ -70,7 +70,9 @@ internal sealed partial class StructureControlsUI :
         layout.padding = new RectOffset(42, 42, 32, 32);
         layout.spacing = 10f;
         layout.childAlignment = TextAnchor.UpperCenter;
-        layout.childControlHeight = false;
+        // Nine 52px buttons, 58px title, spacing and padding fit the 700px
+        // overlay. Do not inherit the live inventory template's row height.
+        layout.childControlHeight = true;
         layout.childControlWidth = true;
         layout.childForceExpandWidth = true;
         layout.childForceExpandHeight = false;
@@ -80,6 +82,7 @@ internal sealed partial class StructureControlsUI :
         AddTitle(template, "Structure Handler");
         AddButton(template, "Structures Export", () => CloseAndRun(StructureTransfer.PromptExport));
         AddButton(template, "Structures Import", () => ShowImportSelection(inventory));
+        AddButton(template, "Repair Duplicate Terrain", () => CloseAndRun(TerrainRepair.Prompt));
         AddButton(template, StructureTransfer.TopLeftButtonLabel,
             () => CloseAndRun(() => StructureTransfer.ToggleTopLeft(_ => { })));
         AddButton(template, StructureTransfer.BottomRightButtonLabel,
@@ -150,8 +153,12 @@ internal sealed partial class StructureControlsUI :
 
     private Button AddButton(Button template, string label, Action action)
     {
-        return Silverpine.ModdingTools.ModUi.CloneButton(
+        Button button = Silverpine.ModdingTools.ModUi.CloneButton(
             template, transform, label, action);
+        var element = button.GetComponent<LayoutElement>();
+        element.minHeight = element.preferredHeight = 52f;
+        element.flexibleHeight = 0f;
+        return button;
     }
 
     private static string WaterLabel() =>
