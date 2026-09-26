@@ -3,7 +3,20 @@
 Adds Structure Handler controls to Silverpine's shared in-game **Mods** menu
 and a structure editor to the main-menu mod tools.
 
-Version **1.2.8** requires **ModdingTools 1.10.0 or newer**.
+Version **1.2.9** requires **ModdingTools 1.10.0 or newer**.
+
+## Zone paint brush (1.2.9)
+
+- In the editor's **Terrain** tab, enter a **Zone** name and enable **Paint Zones**.
+  The same controls are available in **Quick Place → Terrain / Structural**.
+- Left-click and drag across existing terrain/floor cells to rename their zones.
+  All terrain/floor layers in each painted cell are updated; furniture, walls,
+  appearance, coordinates, and component data are left unchanged. Empty cells
+  are skipped, and a blank zone name explicitly clears the name.
+- Fast drags fill intervening cells. Right-click cancels; middle-drag pans.
+  Each stroke is one Undo action. Save the JSON to retain the changes and import
+  it normally to apply them in-game. No live save or world terrain is edited by
+  this brush, and no ModdingTools update is required.
 
 ## Native grass edging repair correction (1.2.8)
 

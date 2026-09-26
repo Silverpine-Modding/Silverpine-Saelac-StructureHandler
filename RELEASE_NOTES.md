@@ -1,4 +1,4 @@
-# Structure Handler 1.2.8
+# Structure Handler 1.2.9
 
 Created by **Saelac and ChatGPT**.
 
@@ -6,7 +6,7 @@ Created by **Saelac and ChatGPT**.
 
 - Silverpine 1.7.3 and BepInEx 5.
 - **[ModdingTools 1.10.0 or newer](https://github.com/Silverpine-Modding/Silverpine-Saelac-Modding-Tools/releases)** must be installed separately. This requirement is enforced by the plugin.
-- Close the game. Extract `StructureHandler-1.2.8.zip` into
+- Close the game. Extract `StructureHandler-1.2.9.zip` into
   `BepInEx/plugins/StructureHandler/`, replacing the previous DLL, or replace
   that DLL with the standalone download. Do not keep a second copy elsewhere
   under `BepInEx/plugins`.
@@ -14,7 +14,17 @@ Created by **Saelac and ChatGPT**.
   `.sav.moddingtools` companion alongside its `.sav` file when copying or
   restoring saves. This download does not contain or update ModdingTools.
 
-## New in 1.2.8
+## New in 1.2.9
+
+- **Paint Zones** in the editor's Terrain tab and Quick Place's Terrain/Structural
+  categories renames existing terrain/floor zones with left-click and drag.
+- Uses the Zone text field without replacing tiles or changing their appearance.
+  Empty cells and non-terrain objects are untouched. Blank names clear a zone name.
+- Fast drags fill skipped cells; right-click cancels and middle-drag pans. A whole
+  stroke is one Undo action. Changes are saved in the structure JSON for import.
+- No save-format migration or ModdingTools update is needed.
+
+## Retained from 1.2.8
 
 - Fix false "ambiguous" results for duplicate grass beside terrain with native
   seasonal overgrowth. Only edging actually owned by the native grass component,

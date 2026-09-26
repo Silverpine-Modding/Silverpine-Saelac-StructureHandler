@@ -29,6 +29,7 @@ internal sealed partial class StructureEditorUI
 
     private void StartPlanningBrush(bool erase)
     {
+        StopZoneBrush();
         planningBrush = true;
         planningEraser = erase;
         showPlanning = true;

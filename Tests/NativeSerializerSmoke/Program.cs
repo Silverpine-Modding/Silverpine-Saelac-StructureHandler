@@ -35,6 +35,19 @@ var blank = (StructureWorldState)StringSerializationAPI.Deserialize(typeof(Struc
 Check(blank.supplementalObjects.Count == 0 && blank.protectedTiles.Count == 0 && blank.importedCells.Count == 0);
 Console.WriteLine("PASS Native FullSerializer initializes empty state without leaking another save's records.");
 
+var zonedStructure = new StructureFile {
+    supportingTerrain = new() {
+        new() { prefabName = "prefab_tile_wood", x = -7, y = 12, z = 1, hasMapZoneName = true, mapZoneName = "Bath House" },
+        new() { prefabName = "prefab_tile_rock", x = -6, y = 12, z = 1, hasMapZoneName = true, mapZoneName = "" }
+    }
+};
+var zonedReloaded = (StructureFile)StringSerializationAPI.Deserialize(typeof(StructureFile),
+    StringSerializationAPI.Serialize(typeof(StructureFile), zonedStructure));
+Check(zonedReloaded.supportingTerrain[0].hasMapZoneName && zonedReloaded.supportingTerrain[0].mapZoneName == "Bath House");
+Check(zonedReloaded.supportingTerrain[1].hasMapZoneName && zonedReloaded.supportingTerrain[1].mapZoneName == "");
+Check(zonedReloaded.supportingTerrain[0].x == -7 && zonedReloaded.supportingTerrain[0].z == 1);
+Console.WriteLine("PASS Native FullSerializer preserves painted terrain zones, including explicit blank names.");
+
 // Execute the real game's binary serializers, but never create a Unity scene
 // object or call rendering methods. These paths only read/write managed fields.
 T NativeState<T>() => (T)RuntimeHelpers.GetUninitializedObject(typeof(T));

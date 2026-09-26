@@ -821,4 +821,101 @@ Test("Missing source or failed checkpoint cannot authorize a repair", () =>
     }
     finally { Directory.Delete(root, true); }
 });
+Test("Zone painting changes only zone metadata on existing terrain", () =>
+{
+    var tile = new SupportingTerrain {
+        prefabName = "prefab_tile_wood", x = 2, y = -3, z = 1,
+        spriteVariantIndex = 4, lockSpriteVariant = true,
+        components = new() { new() { type = "MapZone", dataBase64 = "original state" } }
+    };
+    var file = new StructureFile { supportingTerrain = new() { tile } };
+    var components = tile.components;
+    Check(ZonePainting.Apply(file, new[] { Tuple.Create(true, 0) }, "Bakery") == 1);
+    Check(tile.hasMapZoneName && tile.mapZoneName == "Bakery");
+    Check(tile.prefabName == "prefab_tile_wood" && tile.x == 2 && tile.y == -3 && tile.z == 1);
+    Check(tile.spriteVariantIndex == 4 && tile.lockSpriteVariant);
+    Check(ReferenceEquals(tile.components, components) && components.Single().dataBase64 == "original state");
+    Check(file.supportingTerrain.Count == 1 && file.objects.Count == 0);
+});
+Test("Zone painting skips furniture and walls above a floor", () =>
+{
+    var file = new StructureFile {
+        supportingTerrain = new() { new() { prefabName = "prefab_tile_rock" } },
+        objects = new() {
+            new() { prefabName = "prefab_furniture_table_wood", hasMapZoneName = true, mapZoneName = "Leave alone" },
+            new() { prefabName = "prefab_wall_stone" },
+            new() { prefabName = "prefab_door_wood" }
+        }
+    };
+    var entries = new[] { Tuple.Create(true, 0), Tuple.Create(false, 0), Tuple.Create(false, 1), Tuple.Create(false, 2) };
+    Check(ZonePainting.Apply(file, entries, "Tavern") == 1);
+    Check(file.objects[0].mapZoneName == "Leave alone" && !file.objects[1].hasMapZoneName && !file.objects[2].hasMapZoneName);
+});
+Test("Zone painting covers stacked ground and legacy floor records in the indexed cell only", () =>
+{
+    var file = new StructureFile {
+        supportingTerrain = new() {
+            new() { prefabName = "prefab_tile_grass" }, new() { prefabName = "prefab_tile_rock" },
+            new() { prefabName = "prefab_tile_wood", x = 1, mapZoneName = "Unpainted", hasMapZoneName = true }
+        },
+        objects = new() { new() { prefabName = "PREFAB_TILE_WOOD", turnableIndex = 2 } }
+    };
+    Check(ZonePainting.Apply(file, new[] { Tuple.Create(true, 0), Tuple.Create(true, 1), Tuple.Create(false, 0) }, "Hall") == 3);
+    Check(file.objects[0].mapZoneName == "Hall" && file.objects[0].turnableIndex == 2);
+    Check(file.supportingTerrain[2].mapZoneName == "Unpainted");
+});
+Test("Empty zone strokes create no objects or terrain", () =>
+{
+    var file = new StructureFile();
+    Check(ZonePainting.Apply(file, Array.Empty<Tuple<bool, int>>(), "Empty") == 0);
+    Check(file.objects.Count == 0 && file.supportingTerrain.Count == 0);
+});
+Test("Repeated zone painting is a no-op and blank names are explicit overrides", () =>
+{
+    var tile = new SupportingTerrain { mapZoneName = "Bakery" };
+    var file = new StructureFile { supportingTerrain = new() { tile } };
+    var entries = new[] { Tuple.Create(true, 0) };
+    Check(ZonePainting.Apply(file, entries, "Bakery") == 1); // Flag must also be set.
+    Check(ZonePainting.Apply(file, entries, "Bakery") == 0);
+    Check(ZonePainting.Apply(file, entries, "") == 1 && tile.hasMapZoneName && tile.mapZoneName == "");
+    Check(ZonePainting.Apply(file, entries, "") == 0);
+});
+Test("Zone drags fill skipped cells in both directions, including negative coordinates", () =>
+{
+    var stroke = new ZonePaintStroke();
+    Check(stroke.Trace(-3, 2, true).SequenceEqual(new[] { (-3, 2) }));
+    Check(stroke.Trace(1, 2, false).SequenceEqual(new[] { (-3, 2), (-2, 2), (-1, 2), (0, 2), (1, 2) }));
+    Check(stroke.Trace(-1, 0, false).SequenceEqual(new[] { (1, 2), (0, 1), (-1, 0) }));
+});
+Test("Zone strokes never connect across preview exits, panning, or zooming", () =>
+{
+    var stroke = new ZonePaintStroke();
+    _ = stroke.Trace(0, 0, true).ToArray();
+    stroke.BreakPath();
+    Check(stroke.Trace(10, 10, false).SequenceEqual(new[] { (10, 10) }));
+});
+Test("Zone painting requires a preview mouse-down and ends on release or cancellation", () =>
+{
+    var stroke = new ZonePaintStroke();
+    Check(!stroke.Trace(4, 4, false).Any());
+    _ = stroke.Trace(0, 0, true).ToArray();
+    stroke.End();
+    Check(!stroke.Trace(20, 20, false).Any());
+    Check(stroke.Trace(30, 30, true).SequenceEqual(new[] { (30, 30) }));
+});
+Test("Painted zones survive JSON round-trip and an entire stroke can be undone/redone", () =>
+{
+    var options = new System.Text.Json.JsonSerializerOptions { IncludeFields = true };
+    var file = new StructureFile { supportingTerrain = new() { new() { x = 0 }, new() { x = 1 } } };
+    string Snapshot() => System.Text.Json.JsonSerializer.Serialize(file, options);
+    var history = new SnapshotHistory();
+    history.Reset(Snapshot());
+    ZonePainting.Apply(file, new[] { Tuple.Create(true, 0) }, "Bath House");
+    ZonePainting.Apply(file, new[] { Tuple.Create(true, 1) }, "Bath House");
+    history.Record(Snapshot());
+    var undone = System.Text.Json.JsonSerializer.Deserialize<StructureFile>(history.Undo()!, options)!;
+    Check(undone.supportingTerrain.All(t => !t.hasMapZoneName));
+    var redone = System.Text.Json.JsonSerializer.Deserialize<StructureFile>(history.Redo()!, options)!;
+    Check(redone.supportingTerrain.All(t => t.hasMapZoneName && t.mapZoneName == "Bath House"));
+});
 Console.WriteLine($"{passed} regression tests passed.");

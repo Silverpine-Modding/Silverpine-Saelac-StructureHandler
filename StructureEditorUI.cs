@@ -120,6 +120,7 @@ internal sealed partial class StructureEditorUI :
         planningIndex.Clear();
         planningColors.Clear();
         StopPlanningBrush();
+        StopZoneBrush();
         ClearSharedMetadata();
         structure = null;
         dirty = false;
@@ -145,6 +146,7 @@ internal sealed partial class StructureEditorUI :
         spriteVariants.Clear();
         spriteLocalBounds.Clear();
         StopPlanningBrush();
+        StopZoneBrush();
         ClearSharedMetadata();
         gameObject.SetActive(false);
     }
@@ -157,6 +159,7 @@ internal sealed partial class StructureEditorUI :
         {
             brushStroke = false;
             lastPlanningCell = null;
+            zoneStroke.End();
         }
         if (pendingDiscardAction == null && pendingOverwritePath == null &&
             Event.current.type == EventType.KeyDown && Event.current.control && Event.current.keyCode == KeyCode.Z)
@@ -284,6 +287,7 @@ internal sealed partial class StructureEditorUI :
             if (deleteBrush)
             {
                 StopPlanningBrush();
+                StopZoneBrush();
                 brushPrefabName = "";
                 status =
                     "Quick Delete enabled: left-click and drag to erase; " +
@@ -321,7 +325,9 @@ internal sealed partial class StructureEditorUI :
             HandlePreviewInput(preview, center);
         }
         GUILayout.Label(
-            planningBrush
+            zoneBrush
+                ? "Zone brush: left-click/drag to rename terrain/floors; right-click to cancel. Middle-drag pans."
+                : planningBrush
                 ? $"Planning {(planningEraser ? "eraser" : planningColor)}: left-drag to mark; right-click to cancel."
                 : string.IsNullOrWhiteSpace(brushPrefabName)
                 ? "Drag or middle-drag to pan. Mouse wheel zooms; click to select."
@@ -799,12 +805,12 @@ internal sealed partial class StructureEditorUI :
         return result;
     }
 
-    private void MarkStructureDirty()
+    private void MarkStructureDirty(bool geometryChanged = true)
     {
         dirty = true;
         historyDirty = true;
         editRevision++;
-        InvalidateRenderOrder();
+        if (geometryChanged) InvalidateRenderOrder();
     }
 
     private void InvalidateRenderOrder()
@@ -926,10 +932,12 @@ internal sealed partial class StructureEditorUI :
         if (pendingDiscardAction != null || !preview.Contains(current.mousePosition))
         {
             lastPlanningCell = null;
+            zoneStroke.BreakPath();
             return;
         }
         if (current.type == EventType.ScrollWheel)
         {
+            zoneStroke.BreakPath();
             float next = Mathf.Clamp(zoom * Mathf.Pow(1.12f, -current.delta.y), 8f, 60f);
             Vector2 pointer = current.mousePosition - preview.center;
             previewPan = pointer - (pointer - previewPan) * (next / zoom);
@@ -941,11 +949,13 @@ internal sealed partial class StructureEditorUI :
         if (current.type == EventType.MouseDrag && current.button == 2)
         {
             lastPlanningCell = null;
+            zoneStroke.BreakPath();
             previewPan += current.delta;
             current.Use();
             return;
         }
 
+        if (HandleZoneInput(center)) return;
         if (HandlePlanningInput(center)) return;
 
         if (deleteBrush)
@@ -1206,6 +1216,7 @@ internal sealed partial class StructureEditorUI :
         if (previousTab != editorTab)
         {
             StopPlanningBrush();
+            StopZoneBrush();
             if (editorTab == 3)
             {
                 deleteBrush = false;
@@ -1249,6 +1260,8 @@ internal sealed partial class StructureEditorUI :
 
     private void DrawTerrainTab()
     {
+        DrawZoneBrushControls();
+        GUILayout.Space(8);
         GUILayout.Label("Supporting terrain");
         DrawVirtualList(ref terrainScroll, structure!.supportingTerrain.Count, 240,
             i => { var item = structure.supportingTerrain[i]; return $"{i + 1}. {item.prefabName} ({item.x}, {item.y})"; },
@@ -1284,12 +1297,11 @@ internal sealed partial class StructureEditorUI :
         string category = categories[
             Mathf.Clamp(quickPlaceTab, 0, categories.Length - 1)];
         GUILayout.Label($"Quick-place {category.ToLowerInvariant()}");
-        if (quickPlaceTab == 0 || IsQuickPlaceSupportingTerrain(brushPrefabName))
+        if (quickPlaceTab == 0 || quickPlaceTab == 1 || zoneBrush ||
+            IsQuickPlaceSupportingTerrain(brushPrefabName))
         {
-            terrainBrushZone =
-                LabeledTextField("Zone", terrainBrushZone);
-            GUILayout.Label(
-                "Terrain painted with this brush keeps the same zone name.");
+            DrawZoneBrushControls();
+            PlanningLabel("Quick-placed terrain also uses this zone name.");
         }
         catalogSearch = LabeledTextField("Search", catalogSearch);
         RefreshCatalogFilter();
@@ -1298,6 +1310,7 @@ internal sealed partial class StructureEditorUI :
             {
                 addPrefabName = brushPrefabName = filteredCatalog[i];
                 StopPlanningBrush();
+                StopZoneBrush();
                 addZ = GetQuickPlaceDefaultZ(brushPrefabName).ToString(CultureInfo.InvariantCulture);
                 deleteBrush = false;
                 lastBrushCell = null;
@@ -1948,6 +1961,7 @@ internal sealed partial class StructureEditorUI :
             StructureFile loaded =
                 ReadEditableFile(path, out int normalizedTiles);
             StopPlanningBrush();
+            StopZoneBrush();
             structure = loaded;
             InvalidateRenderOrder();
             currentPath = path;
@@ -2013,6 +2027,7 @@ internal sealed partial class StructureEditorUI :
                 serializedObjectsBase64 = ""
             };
             StopPlanningBrush();
+            StopZoneBrush();
             InvalidateRenderOrder();
             currentPath = "";
             saveAsName = "Combined Structure";
@@ -2139,6 +2154,7 @@ internal sealed partial class StructureEditorUI :
             serializedObjectsBase64 = ""
         };
         StopPlanningBrush();
+        StopZoneBrush();
         InvalidateRenderOrder();
         currentPath = path;
         saveAsName = structure.name;

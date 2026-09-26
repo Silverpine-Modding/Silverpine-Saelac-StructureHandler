@@ -68,6 +68,7 @@ internal sealed partial class StructureEditorUI
         structure = (StructureFile)StringSerializationAPI.Deserialize(typeof(StructureFile), snapshot);
         structure.planningTiles = PlanningTiles.Normalize(structure.planningTiles);
         lastPlanningCell = null;
+        zoneStroke.End();
         selectedObject = selectedTerrain = -1;
         movementReferenceSelection = int.MinValue;
         dirty = snapshot != savedSnapshot;

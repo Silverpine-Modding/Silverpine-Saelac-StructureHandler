@@ -18,6 +18,7 @@
     <Compile Include="..\ImportFileSelection.cs" Link="ImportFileSelection.cs" />
     <Compile Include="..\StructureRailingState.cs" Link="StructureRailingState.cs" />
     <Compile Include="..\PlanningTiles.cs" Link="PlanningTiles.cs" />
+    <Compile Include="..\ZonePainting.cs" Link="ZonePainting.cs" />
     <Compile Include="..\StructurePersistenceLedger.cs" Link="StructurePersistenceLedger.cs" />
     <Compile Include="..\NativeSavePolicy.cs" Link="NativeSavePolicy.cs" />
     <Compile Include="..\TerrainRepairPolicy.cs" Link="TerrainRepairPolicy.cs" />
