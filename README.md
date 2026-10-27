@@ -3,7 +3,34 @@
 Adds Structure Handler controls to Silverpine's shared in-game **Mods** menu
 and a structure editor to the main-menu mod tools.
 
-Version **1.2.9** requires **ModdingTools 1.10.0 or newer**.
+Version **1.2.11** requires **ModdingTools 1.10.0 or newer**.
+
+## Furniture pickup on player-buildable tiles (1.2.11)
+
+- The **Build / Sleep / Pickup** toggle also allows the normal **Pick Up Furniture**
+  action on pickup-capable furniture in that world tile, even if its native
+  `owned` flag is set. Existing marked tiles work without re-importing.
+- Pickup highlighting uses the same permission, showing eligible furniture green.
+  The check uses the furniture's coordinates, including across world-tile borders.
+- Pickup mode, the normal interaction distance, inventory capacity, furniture
+  contents, and the game's pickup/placement code are unchanged. Objects without
+  native pickup support do not become pickupable.
+- The tile toggle does not erase furniture ownership. Turning it off restores
+  normal restrictions for furniture still in place. No new save data or
+  ModdingTools update is needed.
+
+## Sleeping on player-buildable tiles (1.2.10)
+
+- The per-save player-buildable toggle also grants sleeping permission. A marked
+  world tile grants player bed-sleeping permission, including in the wilderness
+  and for imported beds that retain an NPC owner. Existing marked tiles work
+  automatically; turning the flag off restores normal ownership rules.
+- This checks the bed's location, not the adjacent cell the player stands on.
+  It does not transfer bed ownership or change NPC routines, rental hours,
+  relationship values, or world-generation settings.
+- Normal non-tent beds still need a roof, and the cold restriction still applies.
+  Ground sleeping keeps its normal submerged/cold checks and no-sanity-recovery
+  rule. No save migration or ModdingTools update is needed.
 
 ## Zone paint brush (1.2.9)
 
@@ -252,6 +279,8 @@ the update.
 - A neighboring in-game toggle shows whether the world tile under the player is
   entirely **Player Buildable**. Enabling it makes all coordinates in that
   100×100 world tile pass the game's player-owned-property construction check.
+  The **Build / Sleep / Pickup** label reflects that the same flag also grants
+  bed-sleeping and furniture-pickup permission there; other native restrictions remain.
 - Bounded exports include placed `WorldItem` objects as well as pickupable
   furniture.
 - Format 3 JSON lists each object by editable prefab name and world coordinates,

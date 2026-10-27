@@ -123,7 +123,7 @@ internal sealed partial class StructureControlsUI :
             Plugin.SetWorldTilePlayerBuildable(worldTile, enabled);
             UpperNotificationUI.Instance.OneOff(
                 $"World tile {worldTile.x}, {worldTile.y} is now " +
-                $"{(enabled ? "player buildable" : "no longer marked player buildable")}.");
+                $"{(enabled ? "player buildable; sleeping and furniture pickup are permitted" : "no longer marked player buildable; normal sleep and pickup permissions apply")}.");
             Rebuild(inventory);
         });
         AddButton(template, "Close", Close);
@@ -176,11 +176,11 @@ internal sealed partial class StructureControlsUI :
     private static string PlayerBuildableLabel()
     {
         if (!Plugin.TryGetPlayerWorldTile(out Vector2Int worldTile))
-            return "Current World Tile Player Buildable: Unavailable";
+            return "Current World Tile Build / Sleep / Pickup: Unavailable";
 
         bool enabled =
             Plugin.IsWorldTilePlayerBuildable(worldTile);
-        return $"World Tile {worldTile.x}, {worldTile.y} Player Buildable: " +
+        return $"World Tile {worldTile.x}, {worldTile.y} Build / Sleep / Pickup: " +
                $"{(enabled ? "On" : "Off")}";
     }
     private void CloseAndRun(Action action)

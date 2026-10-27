@@ -88,10 +88,33 @@ try {
     Assert-MethodCalls 'DestinationGround' 'InstantiateRestoredGround' 'StructureTerrainPersistence::RecordRestoredGround'
     $awake = $plugin.Methods | Where-Object Name -eq 'Awake'
     $installed = @($awake.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.TypeReference] } | ForEach-Object { $_.Operand.Name })
-    foreach ($required in @('StructureReleasedPoolSavePatch', 'StructurePrepareNativeSavePatch', 'StructureRestoredGroundPatch')) {
+    foreach ($required in @('StructureReleasedPoolSavePatch', 'StructurePrepareNativeSavePatch', 'StructureRestoredGroundPatch', 'PlayerBuildableSleepPatch', 'PlayerBuildablePickupPatch')) {
         if ($installed -notcontains $required) { throw "Missing startup patch: $required" }
     }
     'PASS Compiled pool filtering, per-save repair detection, and save tracking hooks are wired and installed.'
+    Assert-MethodCalls 'PlayerBuildableSleepPatch' 'GetSleepOwner' 'Plugin::GetWorldTile'
+    Assert-MethodCalls 'PlayerBuildableSleepPatch' 'GetSleepOwner' 'Plugin::IsWorldTilePlayerBuildable'
+    Assert-MethodCalls 'PlayerBuildableSleepPatch' 'IsSleepingPlot' 'Plugin::GetWorldTile'
+    Assert-MethodCalls 'PlayerBuildableSleepPatch' 'IsSleepingPlot' 'Plugin::IsWorldTilePlayerBuildable'
+    Assert-MethodCalls 'PlayerBuildableSleepPatch' 'IsSleepingPlot' 'WorldInfoManager::IsOnPlayerOwnedPlot'
+    $sleep = $assembly.MainModule.Types | Where-Object FullName -eq 'StructureHandler.PlayerBuildableSleepPatch'
+    $sleepPermission = $sleep.Methods | Where-Object { $_.Name -in @('GetSleepOwner', 'IsSleepingPlot', 'ResolveSleepOwner') }
+    if ($sleepPermission.Body.Instructions | Where-Object { $_.OpCode.Name -in @('stfld', 'stsfld') }) {
+        throw 'Sleeping permission must not mutate saved bed ownership or global state.'
+    }
+    $sleepTarget = $sleep.CustomAttributes | Where-Object { $_.AttributeType.FullName -eq 'HarmonyLib.HarmonyPatch' }
+    if ($sleepTarget.ConstructorArguments[0].Value.FullName -ne 'Bed' -or
+        $sleepTarget.ConstructorArguments[1].Value -ne 'OnInteract') { throw 'Sleep patch must target player bed interaction only.' }
+    'PASS Sleep permission uses the bed tile, preserves native plot fallback and never mutates saved owners.'
+    Assert-MethodCalls 'PlayerBuildablePickupPatch' 'IsOwnershipBlocked' 'Plugin::GetWorldTile'
+    Assert-MethodCalls 'PlayerBuildablePickupPatch' 'IsOwnershipBlocked' 'Plugin::IsWorldTilePlayerBuildable'
+    Assert-MethodCalls 'PlayerBuildablePickupPatch' 'IsOwnershipBlocked' 'UnityExtensions::GetVector2IntPosition'
+    $pickupPatch = $assembly.MainModule.Types | Where-Object FullName -eq 'StructureHandler.PlayerBuildablePickupPatch'
+    $pickupPermission = $pickupPatch.Methods | Where-Object { $_.Name -in @('IsOwnershipBlocked', 'ResolveOwnershipBlock') }
+    if ($pickupPermission.Body.Instructions | Where-Object { $_.OpCode.Name -in @('stfld', 'stsfld') }) {
+        throw 'Pickup permission must not mutate ownership or save/global state.'
+    }
+    'PASS Compiled pickup permission uses furniture coordinates and does not clear saved ownership.'
     $policy = $assembly.MainModule.Types | Where-Object FullName -eq 'StructureHandler.NativeSavePolicy'
     if (($policy.Methods | Where-Object Name -eq 'RemoveReleased').Parameters.Count -ne 3) {
         throw 'Pool saving still depends on coordinates or historical import markers.'
@@ -120,6 +143,40 @@ try {
     'PASS Native grass edging requires ownership, native components, and the correct child hierarchy in both repair scans.'
     $gameAssembly = [Mono.Cecil.AssemblyDefinition]::ReadAssembly((Join-Path $projectRoot '../../Silverpine_Data/Managed/Assembly-CSharp.dll'))
     try {
+        $bed = $gameAssembly.MainModule.Types | Where-Object Name -eq 'Bed'
+        $interact = $bed.Methods | Where-Object Name -eq 'OnInteract'
+        $ownerReads = @($interact.Body.Instructions | Where-Object {
+            $_.OpCode.Name -eq 'ldfld' -and $_.Operand -is [Mono.Cecil.FieldReference] -and
+            $_.Operand.DeclaringType.Name -eq 'Bed' -and $_.Operand.Name -eq 'owner'
+        })
+        $bedCalls = @($interact.Body.Instructions | Where-Object {
+            $_.Operand -is [Mono.Cecil.MethodReference]
+        } | ForEach-Object { $_.Operand.FullName })
+        if ($ownerReads.Count -ne 3 -or @($bedCalls | Where-Object { $_ -match 'WorldInfoManager::IsOnPlayerOwnedPlot' }).Count -ne 1 -or
+            -not ($bedCalls | Where-Object { $_ -match 'TileTags::HasTileTag' }) -or
+            -not ($bedCalls | Where-Object { $_ -match 'HasStatusEffectOfType<StatusEffect_Cold>' })) {
+            throw 'Native bed permission, roof, or cold checks changed; sleep patch requires review.'
+        }
+        'PASS Actual native bed IL matches the scoped ownership patch and retains independent roof/cold checks.'
+        $pickup = $gameAssembly.MainModule.Types | Where-Object Name -eq 'Pickupable'
+        foreach ($methodName in @('SetEnabled', 'OnMouseUpAsButton')) {
+            $method = $pickup.Methods | Where-Object Name -eq $methodName
+            $ownedReads = @($method.Body.Instructions | Where-Object {
+                $_.OpCode.Name -eq 'ldfld' -and $_.Operand -is [Mono.Cecil.FieldReference] -and
+                $_.Operand.DeclaringType.Name -eq 'Pickupable' -and $_.Operand.Name -eq 'owned'
+            })
+            if ($ownedReads.Count -ne 1) { throw "Native $methodName pickup ownership check changed." }
+        }
+        $highlight = $pickup.Methods | Where-Object Name -eq 'SetEnabled'
+        $pickupClick = $pickup.Methods | Where-Object Name -eq 'OnMouseUpAsButton'
+        $pickupCalls = @($pickupClick.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] } | ForEach-Object { $_.Operand.FullName })
+        if (-not ($highlight.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'ldc.r4' -and [Math]::Abs([double]$_.Operand - 1.55) -lt 0.001 }) -or
+            -not ($pickupClick.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'ldfld' -and $_.Operand.Name -eq 'active' }) -or
+            -not ($pickupCalls | Where-Object { $_ -match 'Inventory::TryAddItem' }) -or
+            -not ($pickupCalls | Where-Object { $_ -match 'Pickupable::GenerateItem' })) {
+            throw 'Native pickup distance, mode, inventory or item-generation behavior changed.'
+        }
+        'PASS Actual native pickup IL matches both permission hooks and retains distance, active-mode and inventory checks.'
         $overgrowth = $gameAssembly.MainModule.Types | Where-Object FullName -eq 'OvergrowthTile'
         $owned = $overgrowth.Fields | Where-Object Name -eq 'instantiatedPrefabs'
         $sourcePrefab = $overgrowth.Fields | Where-Object Name -eq 'overgrowthPrefab'

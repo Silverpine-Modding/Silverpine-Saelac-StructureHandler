@@ -1,4 +1,4 @@
-# Structure Handler 1.2.9
+# Structure Handler 1.2.11
 
 Created by **Saelac and ChatGPT**.
 
@@ -6,7 +6,7 @@ Created by **Saelac and ChatGPT**.
 
 - Silverpine 1.7.3 and BepInEx 5.
 - **[ModdingTools 1.10.0 or newer](https://github.com/Silverpine-Modding/Silverpine-Saelac-Modding-Tools/releases)** must be installed separately. This requirement is enforced by the plugin.
-- Close the game. Extract `StructureHandler-1.2.9.zip` into
+- Close the game. Extract `StructureHandler-1.2.11.zip` into
   `BepInEx/plugins/StructureHandler/`, replacing the previous DLL, or replace
   that DLL with the standalone download. Do not keep a second copy elsewhere
   under `BepInEx/plugins`.
@@ -14,7 +14,30 @@ Created by **Saelac and ChatGPT**.
   `.sav.moddingtools` companion alongside its `.sav` file when copying or
   restoring saves. This download does not contain or update ModdingTools.
 
-## New in 1.2.9
+## New in 1.2.11
+
+- Player-buildable world tiles permit the normal **Pick Up Furniture** action on
+  pickup-capable furniture, including objects retaining the native owned flag.
+  The tile toggle is labeled **Build / Sleep / Pickup**.
+- The pickup highlight and click permission both use the furniture's location.
+  Pickup distance, inventory capacity, contents, and native item creation and
+  placement are unchanged; no pickup components are added to other objects.
+- Existing marked tiles work immediately. Disabling the flag restores normal
+  restrictions for furniture still in place without erasing ownership data.
+  No save migration, re-import or ModdingTools update is required.
+
+## Retained from 1.2.10
+
+- Marking a world tile player buildable also grants player bed-sleeping permission
+  there, including wilderness and NPC-owned imported beds. This continues using
+  the existing per-save flag, now labeled **Build / Sleep / Pickup**.
+- Permission is evaluated at the bed's coordinates. Turning the flag off restores
+  normal ownership checks without changing the bed's saved owner, NPC routines,
+  relationship values, or rental hours.
+- Roof and cold restrictions remain intact; ground sleeping is unchanged.
+  No save migration or ModdingTools update is required.
+
+## Retained from 1.2.9
 
 - **Paint Zones** in the editor's Terrain tab and Quick Place's Terrain/Structural
   categories renames existing terrain/floor zones with left-click and drag.
@@ -110,8 +133,8 @@ Created by **Saelac and ChatGPT**.
 ## Verification and contents
 
 - Release build: zero warnings and errors.
-- All **115 Unity-independent regression tests** pass.
-- All **7 native serialization checks** and **9 compiled hook/lifecycle checks**
+- All **124 Unity-independent regression tests** pass.
+- All **17 native serialization/permission checks** and **13 compiled hook/lifecycle checks**
   pass. Real gameplay, rendering, and complete save/load behavior still need
   in-game verification; automated checks do not substitute for that test.
 - Downloads contain only the plugin and documentation, without proprietary

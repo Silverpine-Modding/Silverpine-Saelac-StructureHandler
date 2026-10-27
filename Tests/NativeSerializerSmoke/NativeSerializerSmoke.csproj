@@ -8,6 +8,11 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\..\StructureModels.cs" Link="StructureModels.cs" />
+    <Compile Include="..\..\PlayerBuildableSleep.cs" Link="PlayerBuildableSleep.cs" />
+    <Compile Include="..\..\PlayerBuildablePickup.cs" Link="PlayerBuildablePickup.cs" />
+    <Reference Include="0Harmony">
+      <HintPath>..\..\..\..\BepInEx\core\0Harmony.dll</HintPath>
+    </Reference>
     <Reference Include="Assembly-CSharp">
       <HintPath>..\..\..\..\Silverpine_Data\Managed\Assembly-CSharp.dll</HintPath>
     </Reference>
