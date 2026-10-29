@@ -176,7 +176,14 @@ internal static class StructureTerrainPersistence
                 ObjectPool.CallStarts();
             }, "saved supplemental terrain");
         }
-        finally { changingSceneState = false; }
+        finally
+        {
+            changingSceneState = false;
+            // Supplemental ground can replace tiles after native Start has
+            // already built the neighboring edges. Cover restoration/rollback.
+            StructureTransfer.RequestTileVisualRefresh(wanted.Concat(cleared).Concat(backup)
+                .SelectMany(StructureEditorUI.GetObjectCells));
+        }
     }
 
     internal static void BeforeUnload(Vector2Int tile)

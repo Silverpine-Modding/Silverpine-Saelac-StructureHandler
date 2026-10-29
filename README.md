@@ -3,7 +3,24 @@
 Adds Structure Handler controls to Silverpine's shared in-game **Mods** menu
 and a structure editor to the main-menu mod tools.
 
-Version **1.2.11** requires **ModdingTools 1.10.0 or newer**.
+Version **1.2.12** requires **ModdingTools 1.12.0 or newer**.
+
+## Tile shading refresh after imports (1.2.12)
+
+- Imports call ModdingTools' `ModTileVisuals.RequestRefresh` with the exact
+  imported turf cells. Grass edging and water-edge shading are rebuilt on those
+  cells and their eight immediate neighbors so borders blend with the destination.
+- The framework coalesces overlapping requests and waits two frames for native
+  initialization and deferred destruction. Distant queued imports request the
+  refresh when their destination is loaded and the import actually runs.
+- Rollback requests the same refresh for restored terrain. Visual-service failures
+  appear in Framework Status without retrying an already committed import.
+- Supplemental terrain restoration and duplicate-terrain repair also refresh
+  affected cells after their transaction, including rollback.
+- This is a visual refresh only: neighboring terrain, collision, ownership and
+  save data are not replaced. No automatic re-import or save migration is added.
+  The earlier feature notes below describe their original dependency requirements;
+  this version needs ModdingTools 1.12.0 for the new API.
 
 ## Furniture pickup on player-buildable tiles (1.2.11)
 

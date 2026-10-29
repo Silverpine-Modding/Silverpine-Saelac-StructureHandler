@@ -20,14 +20,14 @@ namespace StructureHandler;
 
 [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
 [BepInDependency(
-    // Keep compatibility with 1.10.0/1.10.1 and the alias supplied by 1.10.2+.
+    // The compatibility GUID remains available in 1.12.0; tile visuals need its new API.
     "renegadex.silverpine.moddingtools",
-    "1.10.0")]
+    "1.12.0")]
 public sealed class Plugin : BaseUnityPlugin
 {
     public const string PluginGuid = "renegadex.silverpine.customstructures";
     public const string PluginName = "Structure Handler";
-    public const string PluginVersion = "1.2.11";
+    public const string PluginVersion = "1.2.12";
     public const int EditorApiVersion = 2;
 
     internal static ManualLogSource Log = null!;

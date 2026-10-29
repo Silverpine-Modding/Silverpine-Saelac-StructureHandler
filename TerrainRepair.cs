@@ -199,7 +199,12 @@ internal static class TerrainRepair
                     ObjectPool.CallStarts();
                 }, "duplicate terrain repair");
             }
-            finally { StructureSaveState.Mutating = false; }
+            finally
+            {
+                StructureSaveState.Mutating = false;
+                StructureTransfer.RequestTileVisualRefresh(snapshots
+                    .SelectMany(entry => StructureEditorUI.GetObjectCells(entry.Record)));
+            }
             notified = true;
             Plugin.Log.LogInfo($"Repaired {removed.Length} duplicate grass ground objects at {current.Plan.Groups.Count} cells. Backup: {backupDirectory}");
             DialogBox.Instance.DisplayTextNoDialog(

@@ -4,6 +4,7 @@ using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
+using Silverpine.ModdingTools;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -513,8 +514,32 @@ internal static class StructureTransfer
                 }
             }, GetDisplayName(file));
         }
-        finally { StructureSaveState.Mutating = false; }
+        finally
+        {
+            StructureSaveState.Mutating = false;
+            // Also refresh after rollback: removed edges may need rebuilding
+            // around the restored originals. Use exact turf cells, not world
+            // tile coordinates or a rectangular bounds expansion.
+            if (removingOriginals) RequestTileVisualRefresh(occupied);
+        }
         ActionQueue.Instance.DoAfterXFrames(1, WorldInfoManager.Instance.CheckDarknessMode);
+    }
+
+    internal static void RequestTileVisualRefresh(IEnumerable<Vector2Int> cells)
+    {
+        try
+        {
+            // The framework waits for native Start/registration/destruction,
+            // coalesces overlapping imports, and refreshes border/corner cells.
+            ModTileVisuals.RequestRefresh(cells, includeNeighbors: true);
+        }
+        catch (Exception exception)
+        {
+            // Visual-service failures must not turn a committed import into a
+            // failed pending entry that replaces the structure again next visit,
+            // or hide the original exception when a transaction rolls back.
+            FrameworkDiagnostics.Report(Plugin.PluginGuid, "refresh edited tile shading", exception);
+        }
     }
 
     private static HashSet<Vector2Int> GetOccupiedPositions(StructureFile file)

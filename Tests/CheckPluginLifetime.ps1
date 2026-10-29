@@ -43,6 +43,68 @@ try {
     Assert-MethodCalls 'StructureTransfer' 'ApplyLoadedImport' 'DestinationGround::Capture'
     Assert-MethodCalls 'StructureTransfer' 'ApplyLoadedImport' 'DestinationSupportPolicy::GetUnreplacedCells'
     $transfer = $assembly.MainModule.Types | Where-Object FullName -eq 'StructureHandler.StructureTransfer'
+    $visualRefresh = $transfer.Methods | Where-Object Name -eq 'RequestTileVisualRefresh'
+    $request = @($visualRefresh.Body.Instructions | Where-Object {
+        $_.Operand -is [Mono.Cecil.MethodReference] -and
+        $_.Operand.DeclaringType.FullName -eq 'Silverpine.ModdingTools.ModTileVisuals'
+    })
+    if ($request.Count -ne 1 -or $request[0].Operand.Name -ne 'RequestRefresh' -or
+        $request[0].Operand.Parameters[0].ParameterType.FullName -ne 'System.Collections.Generic.IEnumerable`1<UnityEngine.Vector2Int>' -or
+        $request[0].Previous.OpCode.Name -ne 'ldc.i4.1' -or
+        $request[0].Previous.Previous.OpCode.Name -ne 'ldarg.0') {
+        throw 'Importer must defer one exact-cell batch to ModTileVisuals with neighbors enabled.'
+    }
+    'PASS Imported turf cells go directly to the deferred framework API with neighbor/corner refresh enabled.'
+    $applyImport = $transfer.Methods | Where-Object Name -eq 'ApplyLoadedImport'
+    $refreshCall = @($applyImport.Body.Instructions | Where-Object {
+        $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'RequestTileVisualRefresh'
+    })
+    if ($refreshCall.Count -ne 1) { throw 'Import must schedule one visual refresh per transaction.' }
+    $refreshFinally = @($applyImport.Body.ExceptionHandlers | Where-Object {
+        $_.HandlerType.ToString() -eq 'Finally' -and
+        $refreshCall[0].Offset -ge $_.HandlerStart.Offset -and $refreshCall[0].Offset -lt $_.HandlerEnd.Offset
+    })
+    if ($refreshFinally.Count -ne 1 -or $refreshCall[0].Previous.Operand.Name -ne 'occupied') {
+        throw 'Visual refresh must run on the exact occupied cells after commit or rollback.'
+    }
+    $finallyBody = @($applyImport.Body.Instructions | Where-Object {
+        $_.Offset -ge $refreshFinally[0].HandlerStart.Offset -and $_.Offset -lt $refreshCall[0].Offset
+    })
+    if (-not ($finallyBody | Where-Object { $_.OpCode.Name -eq 'stsfld' -and $_.Operand.Name -eq 'Mutating' }) -or
+        -not ($finallyBody | Where-Object { $_.OpCode.Name -eq 'ldfld' -and $_.Operand.Name -eq 'removingOriginals' })) {
+        throw 'Refresh must clear the mutation guard first and skip untouched imports.'
+    }
+    Assert-MethodCalls 'StructureTransfer' 'ImportAll' 'StructureTransfer::ApplyLoadedImport'
+    Assert-MethodCalls 'StructureSaveState' 'ProcessLoadedTile' 'StructureTransfer::ApplyLoadedImport'
+    'PASS Immediate and queued imports refresh after their transaction; rollback is covered without refreshing untouched plans.'
+    $refreshCatch = @($visualRefresh.Body.ExceptionHandlers | Where-Object {
+        $_.HandlerType.ToString() -eq 'Catch' -and $_.CatchType.FullName -eq 'System.Exception'
+    })
+    if ($refreshCatch.Count -ne 1 -or ($visualRefresh.Body.Instructions | Where-Object {
+        $_.OpCode.Name -in @('throw', 'rethrow', 'stfld', 'stsfld')
+    })) { throw 'Visual-service failures must not mutate import state or escape into the queued-import result.' }
+    Assert-MethodCalls 'StructureTransfer' 'RequestTileVisualRefresh' 'FrameworkDiagnostics::Report'
+    'PASS Visual refresh errors are isolated and reported rather than replaying committed imports or masking rollback errors.'
+    $dependency = @($plugin.CustomAttributes | Where-Object {
+        $_.AttributeType.FullName -eq 'BepInEx.BepInDependency' -and
+        $_.ConstructorArguments[0].Value -eq 'renegadex.silverpine.moddingtools'
+    })
+    if ($dependency.Count -ne 1 -or $dependency[0].ConstructorArguments[1].Value -ne '1.12.0') {
+        throw 'The new tile-refresh API requires an enforced ModdingTools 1.12.0 dependency.'
+    }
+    $framework = [Mono.Cecil.AssemblyDefinition]::ReadAssembly((Join-Path $projectRoot '../ModdingTools/bin/Release/netstandard2.1/ModdingTools.dll'))
+    try {
+        $visuals = $framework.MainModule.Types | Where-Object FullName -eq 'Silverpine.ModdingTools.ModTileVisuals'
+        $batchApi = @($visuals.Methods | Where-Object {
+            $_.IsPublic -and $_.IsStatic -and $_.Name -eq 'RequestRefresh' -and $_.Parameters.Count -eq 2 -and
+            $_.Parameters[0].ParameterType.FullName -eq 'System.Collections.Generic.IEnumerable`1<UnityEngine.Vector2Int>' -and
+            $_.Parameters[1].ParameterType.FullName -eq 'System.Boolean'
+        })
+        if ($framework.Name.Version -lt [version]'1.12.0.0' -or $batchApi.Count -ne 1) {
+            throw 'Compiled framework does not expose the required tile-refresh batch contract.'
+        }
+    } finally { $framework.Dispose() }
+    'PASS The enforced dependency and compiled framework expose the required ModdingTools 1.12.0 tile-refresh API.'
     $commitCalls = @($transfer.NestedTypes.Methods | Where-Object Name -like '<ApplyLoadedImport>*' |
         ForEach-Object { $_.Body.Instructions } | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] } |
         ForEach-Object { $_.Operand.FullName })

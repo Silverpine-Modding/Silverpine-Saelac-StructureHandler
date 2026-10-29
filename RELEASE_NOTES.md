@@ -1,12 +1,12 @@
-# Structure Handler 1.2.11
+# Structure Handler 1.2.12
 
 Created by **Saelac and ChatGPT**.
 
 ## Requirements and installation
 
 - Silverpine 1.7.3 and BepInEx 5.
-- **[ModdingTools 1.10.0 or newer](https://github.com/Silverpine-Modding/Silverpine-Saelac-Modding-Tools/releases)** must be installed separately. This requirement is enforced by the plugin.
-- Close the game. Extract `StructureHandler-1.2.11.zip` into
+- **[ModdingTools 1.12.0 or newer](https://github.com/Silverpine-Modding/Silverpine-Saelac-Modding-Tools/releases)** must be installed separately. This requirement is enforced by the plugin.
+- Close the game. Extract `StructureHandler-1.2.12.zip` into
   `BepInEx/plugins/StructureHandler/`, replacing the previous DLL, or replace
   that DLL with the standalone download. Do not keep a second copy elsewhere
   under `BepInEx/plugins`.
@@ -14,7 +14,21 @@ Created by **Saelac and ChatGPT**.
   `.sav.moddingtools` companion alongside its `.sav` file when copying or
   restoring saves. This download does not contain or update ModdingTools.
 
-## New in 1.2.11
+## New in 1.2.12
+
+- Refreshes supplemental terrain restoration and duplicate-terrain repair,
+  including restored terrain after a rollback.
+- Imports now use the ModdingTools tile-refresh API to rebuild native grass
+  edging and water-edge shading on imported cells and their immediate neighbors.
+  Neighboring terrain is not replaced or added to the import footprint.
+- Refreshes are batched and deferred until native tile initialization settles.
+  Queued imports refresh when applied at their destination, not when queued.
+- Failed imports also refresh after rollback. A visual-service failure is
+  reported in Framework Status without re-queuing a successful import.
+- Requires ModdingTools 1.12.0. No save migration or automatic re-import is added.
+  Earlier notes below retain the dependency requirements of their original releases.
+
+## Retained from 1.2.11
 
 - Player-buildable world tiles permit the normal **Pick Up Furniture** action on
   pickup-capable furniture, including objects retaining the native owned flag.
@@ -134,7 +148,7 @@ Created by **Saelac and ChatGPT**.
 
 - Release build: zero warnings and errors.
 - All **124 Unity-independent regression tests** pass.
-- All **17 native serialization/permission checks** and **13 compiled hook/lifecycle checks**
+- All **17 native serialization/permission checks** and **17 compiled hook/lifecycle checks**
   pass. Real gameplay, rendering, and complete save/load behavior still need
   in-game verification; automated checks do not substitute for that test.
 - Downloads contain only the plugin and documentation, without proprietary
