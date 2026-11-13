@@ -3,7 +3,232 @@
 Adds Structure Handler controls to Silverpine's shared in-game **Mods** menu
 and a structure editor to the main-menu mod tools.
 
-Version **1.2.12** requires **ModdingTools 1.12.0 or newer**.
+Version **1.2.26** requires **ModdingTools 1.12.0 or newer**.
+
+## Text-selection drag capture (1.2.26)
+
+- Release the editor's text-drag mouse capture before drawing other controls on
+  mouse-up, even if the original field disappeared or the event was consumed.
+  Recover a missed release on the next click without swallowing that click.
+- Keep selection, keyboard focus and mouse capture together if a virtualized
+  layout changes the field's control ID; use layout-independent text-control IDs.
+- Clicking outside a text field lets the intended button or preview act right
+  away. Releasing a text drag does not paint or pan the preview. Closing releases
+  the editor's own field state without clearing another control's capture.
+- Preserve Enter-to-apply coordinates, clipboard shortcuts and full selection.
+
+## Coordinate submission (1.2.25)
+
+- Capture Enter/keypad Enter on the coordinate field's actual keyboard-focus ID
+  before the native text widget handles the key. Avoid the pre-draw name lookup
+  that could miss submission. Escape still discards the active draft.
+- Keep placement checks and native snapping. Report when snapping keeps an object
+  at its old position rather than silently appearing to ignore a coordinate edit.
+- Retain full-field text selection and the cached preview. No JSON/save changes
+  or updates to ModdingTools or Vertical Layers are required.
+
+## Text selection (1.2.24)
+
+- Give single-line editor fields namespaced control IDs independent of the
+  virtualized preview/catalog controls. Ctrl+A and double-click select the full
+  value, including signed decimals and underscore-separated prefab names.
+- Preserve native drag selection, clipboard and keyboard editing. The preview
+  no longer takes over a text-selection drag that crosses its boundary.
+- Long prefab names scroll inside a fixed-width field; coordinate edits still
+  apply only on Enter. No Vertical Layers or ModdingTools update is needed.
+
+## Cached preview and coordinate entry (1.2.23)
+
+- Cache the composed preview in a resolution-scaled render texture. Unchanged
+  frames draw one image; edits, pan/zoom, selection, overlays and floor switches
+  invalidate it. Preserve sorted sprites, alpha, flips, rotation and clipping.
+  Release GPU resources on close, and fall back to direct drawing if unavailable.
+- Generate loose-item previews over multiple frames (2 ms target, at most four
+  jobs per frame). A single native model render cannot be interrupted. Close,
+  reload and deletion cancel obsolete work without changing serialized items.
+- Selected object, terrain and item coordinates apply only on Enter (including
+  keypad Enter). Escape discards the active draft. Nudge buttons still apply
+  immediately; Quick Place and Move Entire Structure retain their action buttons.
+- Optional **Vertical Layers 0.4.10** caches its floor view instead of rebuilding
+  it on every GUI event, and retains all floors in save/undo operations.
+- No game-save, JSON format or ModdingTools changes are required.
+
+## Editor performance (1.2.22)
+
+- Cache sprite geometry/UVs and query only visible sprite extents, preserving
+  native layer order, rotated sprites, multi-tile furniture and overhangs.
+- Use a separate placement index including native child-collider cells. Painting
+  and deletion update that index without scanning every object's footprint.
+- Keep undo snapshots in memory instead of serializing/parsing JSON after each
+  edit. Group continuous text entry, retain stroke-level undo, and keep the
+  existing 32-entry/32 MiB history limits. Saved JSON format is unchanged.
+- Zone/sign/planning edits no longer rebuild the sprite list. Cache visible
+  planning/zone overlays, item models, prefab metadata and text layout; render
+  only visible file-list rows. Drop item-record caches after deletion and all
+  preview caches on both normal and framework-forced editor close.
+- No changes to import rules, saves or ModdingTools are required. Very large
+  fully zoomed-out previews still cost more to draw than small visible areas.
+
+## Shared market crates and mod-terrain imports (1.2.21)
+
+- Additional native market crates now work without duplicate `market` identity
+  errors. Every loaded crate and bulletin board uses the same live price list.
+  Each crate retains its own goods, unsold stock and native sales/mail behavior.
+  All loaded crates sell against the current board before it changes once at the
+  normal market time (midnight, or 7 AM with Mirel's native key condition).
+- The shared board and last processed cycle are saved per save in the existing
+  ModdingTools companion. Crate inventories remain in native game data. Loading
+  an off-tile crate cannot replace the current board with its old prices; unloaded
+  crates do not gain remote sales beyond native behavior.
+- Direct imports now honor registered mod-prefab activation/hide-flag settings
+  and initialization callbacks. This fixes invisible Terrain Construction roofed
+  grass and other inactive-template terrain, while retaining wooden-rail support.
+  Reimport affected structures after updating; missing grass is not automatically
+  reconstructed from older saves. No source JSON or ModdingTools update is needed.
+- Align the BepInEx-reported version with the DLL/project version.
+
+## Item nudge controls (1.2.20)
+
+- Selected items now show **Nudge** distance plus **Left / Right / Up / Down**
+  below their X/Y coordinates in the Items tab. The distance is shared with
+  Objects and defaults to 0.25 tiles. Loose items allow fractional movement;
+  native snapping and **Ignore Placement Rules** work as they do for objects.
+- Nudges update the preview immediately, support Undo/Redo, and are saved with
+  the JSON. They do not apply pending name/quality edits or rewrite item data.
+
+## Free placement and item-reader diagnostics (1.2.19)
+
+- **Ignore Placement Rules**, above the 2D preview, permits fractional nudges
+  (such as 0.25-tile potted-plant adjustments), exact mouse-point object placement,
+  and placement through collider, wall-placement and submerged-terrain checks.
+  It applies to Quick Place, manual coordinates, duplicate/move/rotate and Items
+  furniture placement. It starts Off and resets when closing the editor.
+- Turning it Off does not reposition existing objects. Native snapping/checks
+  apply to future edits. Terrain stays on whole cells; exclusive ground/floor,
+  wall/door/window and water-overlay slots still prevent duplicate tile layers.
+  Invalid item data and item customization limits are never bypassed.
+- This is an editor override, not a change to live gameplay rules or colliders.
+  Free placement can obstruct paths or interactions. Save and import as usual;
+  fractional object positions are stored directly in the JSON.
+- Fix false `stored but never retrieved` console errors during item preview and
+  editing. The editor reads native field envelopes without scheduling the game's
+  getter-based audit, preserving the native format and untouched fields. Unknown
+  field types, malformed blobs and incompatible item components still fail safely;
+  no global error suppression or game serializer patch is installed.
+
+## Water export preference and zone-color display (1.2.18)
+
+- **Export Other Water Tiles** controls whether non-bath water is collected by
+  **Structures Export**, including bounded terrain and ground under objects.
+  It defaults to Off. Bathhouse water is always eligible for export.
+- **Imports always include all water present in the JSON.** Immediate imports,
+  queued imports, validation and ground replacement no longer read a water
+  preference. The previous On/Off value migrates to the new export setting;
+  its old import key is removed. Editor JSON saves keep deliberately placed water.
+- Reimport an affected source JSON to recover water skipped by older versions.
+  Missing records in an already-filtered queued import cannot be reconstructed
+  automatically. No saved world or source JSON is rewritten by this update.
+- **Show Zone Colors**, beside the zone-paint controls in Quick Place/Terrain,
+  toggles tinting of explicitly named terrain/floor zones (initially Off).
+  Colors are stable by zone name and separate from planning colors, green object
+  markers and world-transition warnings. This only changes the preview, not zone
+  data or in-game lighting. Zone data is cached and drawing visits visible cells.
+
+## Shallow-water overlays (1.2.17)
+
+- `prefab_tile_water_shallow` and `prefab_tile_water_shallow_swamp` now share
+  the water-overlay slot with bathhouse water. All three may sit above one
+  ground/floor tile; only one water overlay is allowed per cell.
+- Painting an overlay preserves the underlying floor and its zone. Painting
+  a floor preserves the overlay. Moving/duplicating overlays still checks for
+  collisions with other water overlays; painting replaces the existing overlay.
+- An overlay imported without ground in its JSON keeps the destination ground.
+  An explicit JSON floor replaces that ground without carrying a second floor.
+  This applies to immediate and queued imports and old/raw tile records.
+- All water present in a JSON imports, and bathhouse water retains its bathing
+  effects. Ordinary/deep river, lake and swamp
+  water remain in the ground slot. Native transparency and preview sorting are
+  unchanged; no save migration or automatic re-import is performed.
+
+## Items tab (1.2.16)
+
+- Search the game's item library (including compatible registered mod items),
+  configure an item and enable **Place copies**. Each left-click places one copy;
+  right-click stops. Ordinary items use fractional, unsnapped coordinates at Z=1.
+  Native 3D items offer eight 45-degree orientations. Furniture-items instead
+  decode their stored prefab and use its native snapping, collision and rotation.
+  Like native placement, furniture does not transfer inventory-only custom text
+  or quality onto its placed prefab; edit the resulting object in **Objects**.
+- Select a loose item in the preview to move it, edit it, delete it or place
+  copies. **Apply item changes** commits the fields; save the JSON afterward.
+  Preview uses native item icons/model previews, item sprite sizing and the
+  `prefab_item` renderer's transform and sorting metadata, without live lighting.
+- Custom text follows the installed game's `NPCFunction_GiveItem` LLM prompts:
+  descriptions are limited to **30 words**, letters to **150 words**, with the
+  corresponding plain-text grammars. These are word limits, not character caps.
+  Counters and validation explain errors; existing text is preserved if unchanged.
+  Material/furniture/gold identities retain their native restrictions. Gold
+  amounts are 0–999; enchantments are limited to one on eligible equipment.
+- Quality offers the complete native **Normal–Legendary** range, intentionally
+  broader than the NPC gift-generation picker. Items without native quality
+  support get a small quality-only item component, not weapon/food mechanics.
+  Keep Structure Handler installed to load those custom-quality items.
+- Item data uses native `WorldInventory`/`WorldItem` serialization, including
+  export, duplicate, undo/redo, combined JSONs, queued imports and game saves.
+  No new ModdingTools companion item data is needed. The original providing mods
+  are still required for modded items. Unsupported/missing item components stop
+  editor changes instead of silently discarding their data.
+- As with other offline placement, player reach, ownership and inventory cost
+  aren't enforced. No live inventory callbacks run while configuring items.
+
+## Game-like preview and placement (1.2.15)
+
+- The preview globally sorts individual sprite parts by the native sorting-layer
+  priority, sorting order (including YSorter and chair/bench rotation offsets),
+  material queue and Z depth. Prefab pivots, child offsets, rotation, scale and
+  flipping are retained. FakeAO/live lighting remain excluded; animations and
+  arbitrary modded shaders/scripts are not simulated by this offline preview.
+- Ground and floors share one slot per cell. Walls, doors and windows share a
+  separate wall slot. Painting replaces only the corresponding slot and supports
+  Undo. Moving/duplicating into an occupied slot is rejected, not destructive.
+- **Bathhouse water has its own overlay slot above the floor.** Painting floors
+  keeps bath water, and painting bath water keeps floors and their zone data.
+  Multiple bath-water overlays in one cell are not permitted. Bath water still
+  imports with the other-water toggle off and keeps its native bathing effects.
+  Importing bath water without a floor in the JSON carries the destination floor
+  beneath it; importing both uses the JSON floor without adding an extra one.
+- Placement consults native collider/passability, Submerge, Pickupable snapping
+  and wall-placement flags. Floor-layer editing remains possible beneath existing
+  objects. Player distance, ownership, inventory and construction time do not
+  apply to offline editing. World-generation/custom-script placement is not
+  emulated; serialized native furniture overlays remain importable.
+- Existing/merged JSON slot conflicts remain visible and editable, with a cell
+  warning. Saving or importing conflicted slots is blocked until corrected,
+  including deferred imports. No source JSON, game save, or rollback snapshot is
+  silently cleaned up. Multi-file import conflict selection is unchanged.
+
+## Furniture turf collision (1.2.14)
+
+- Select furniture in the editor's **Objects** tab and toggle **Turf collision**:
+  **On** blocks movement; **Off** makes that furniture passable. Other objects
+  or terrain at the same cell can still block passage.
+- Save the JSON and import it to apply the change. The native `TurfCollider`
+  component payload carries the setting through export, duplicate, undo/redo,
+  queued imports, native game saves and furniture pickup/replacement. No new
+  ModdingTools companion data is needed.
+- The toggle uses existing native root colliders only. Missing, multiple, or
+  unrecognized colliders are marked unavailable instead of injecting components.
+  It does not disable interaction colliders, alter terrain, or edit prefab assets.
+
+## Editor FakeAO shadow filtering (1.2.13)
+
+- The editor excludes the game's `FakeAO` / `sprite_fakeao` shadow layers,
+  including water-edge variants and renderers nested under FakeAO containers.
+  These overlays previously escaped the preview's lighting-effect filter.
+- Actual door frames, windows, furniture and terrain sprites remain visible.
+  Shading painted into the artwork and the optional footprint overlay remain.
+- This changes only the editor preview. Prefabs, in-game lighting, imports,
+  saved appearances and sprite-variant indices are unchanged.
 
 ## Tile shading refresh after imports (1.2.12)
 
@@ -117,8 +342,8 @@ above supersedes their coordinate-only filtering and reimport-only advice.
   and the same gap for furniture, walls/doors, crops, herbs, and ores. Trees and
   other obstructing objects are still cleared; only terrain is carried over.
 - This covers every occupied cell, including multi-cell objects and queued
-  imports when their destination is loaded. Explicit imported terrain wins;
-  disabled water imports do not count as replacement terrain.
+  imports when their destination is loaded. Explicit imported ground wins;
+  bath/shallow-water overlays can retain ground beneath them.
 - Carried terrain retains its component state, room name, appearance, and any
   existing floor-deconstruction history. It goes through the same rollback and
   native/supplemental saving paths as the rest of the import. Portable JSONs are
@@ -280,11 +505,11 @@ the update.
 - Doors bring along their underlying flat-ground terrain prefab when no
   constructed floor exists. Terrain is recorded explicitly because Silverpine's
   generated ground tiles do not implement its object-serialization interface.
-- All terrain layers inside custom bounds are exported explicitly, including
-  natural ground, constructed floors, water, and shallow water.
-- Bathhouse water is always restored during import. A persistent Settings toggle
-  named **Import Other Water Tiles** controls whether ordinary water terrain is
-  restored; it defaults to off.
+- Terrain inside custom bounds is exported explicitly, including natural ground
+  and constructed floors. **Export Other Water Tiles** in the in-game Mods menu
+  controls non-bath water and shallow-water inclusion; it defaults to Off.
+- Bathhouse water is always eligible for export. All water already present in
+  a JSON is imported regardless of the export preference.
 - Wilderness world tiles containing imports are recorded and protected from the
   game's midnight blob-clearing pass. The in-game controls show the player's
   current world-tile coordinates and whether regeneration is **On** or **Off**.
@@ -383,6 +608,11 @@ the new companion fields and old-payload compatibility using Silverpine's
 actual `StringSerializationAPI` (local game assemblies are required).
 `Tests/CheckPluginLifetime.ps1` also inspects the compiled plugin to ensure
 bootstrap cleanup cannot remove its process-lifetime save registration.
+`Tests/EditorInputSmoke` exercises the production text-field helpers against a
+headless event surface, including Enter submission, selection drags, mouse-up
+recovery and control-ID changes. `Tests/ItemsMono` runs native serializer and
+TextEditor compatibility checks in a disposable copy of the game's Mono runtime;
+see its README for invocation. Neither suite substitutes for live UI testing.
 
 Build with `dotnet build -c Release`, then copy `StructureHandler.dll` from the
 release output folder into `BepInEx/plugins/StructureHandler/`.

@@ -13,8 +13,7 @@ internal static class DestinationGround
 {
     private static readonly FieldInfo Previous = AccessTools.Field(typeof(GrassTileHandler), "previousTilePrefabName");
 
-    internal static Dictionary<Vector2Int, string> Capture(StructureFile file, IEnumerable<GameObject> originals,
-        Func<string, bool> includeTerrain)
+    internal static Dictionary<Vector2Int, string> Capture(StructureFile file, IEnumerable<GameObject> originals)
     {
         var required = new HashSet<Vector2Int>();
         var offsets = new Dictionary<string, Vector3[]>(StringComparer.OrdinalIgnoreCase);
@@ -31,7 +30,7 @@ internal static class DestinationGround
                 required.Add(new Vector2Int(Mathf.RoundToInt(x + offset.x), Mathf.RoundToInt(y + offset.y)));
         }
         foreach (var item in file.objects) Add(item.prefabName, item.x, item.y);
-        foreach (var item in file.supportingTerrain.Where(item => includeTerrain(item.prefabName))) Add(item.prefabName, item.x, item.y);
+        foreach (var item in file.supportingTerrain) Add(item.prefabName, item.x, item.y);
         if (required.Count == 0) return new();
 
         var byCell = new Dictionary<Vector2Int, List<(string Prefab, bool Constructed, string? Previous, float Z)>>();

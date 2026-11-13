@@ -319,7 +319,7 @@ internal static class StructureTransfer
         try
         {
             List<StructureFile> files = paths.Select(ReadFile).ToList();
-            ValidateImportFiles(files);
+            ValidateImportFiles(files, enforcePlacement: true);
             // Build each footprint once, then count only pairs sharing cells.
             var owners = new Dictionary<Vector2Int, List<int>>();
             var counts = new Dictionary<(int, int), int>();
@@ -397,7 +397,7 @@ internal static class StructureTransfer
             {
                 var tile = Plugin.GetWorldTile(new Vector2(x, y));
                 return (tile.x, tile.y);
-            }, ShouldImportTerrain)).ToList();
+            })).ToList();
             foreach (var tile in plans.SelectMany(plan => plan.Keys).Distinct())
                 if (!DungeonGenerationManager.Instance.worldTiles.ContainsKey(new Vector2Int(tile.X, tile.Y)))
                     throw new InvalidDataException($"Destination world tile ({tile.X}, {tile.Y}) does not exist in this save.");
@@ -434,25 +434,38 @@ internal static class StructureTransfer
 
     internal static void ApplyLoadedImport(StructureFile file)
     {
+        ValidatePlacement(file);
         var occupied = GetOccupiedPositions(file);
         var replacingPrefabs = new HashSet<string>(file.objects.Select(item => item.prefabName)
-            .Concat(file.supportingTerrain.Where(item => ShouldImportTerrain(item.prefabName))
+            .Concat(file.supportingTerrain
                 .Select(item => item.prefabName)), StringComparer.OrdinalIgnoreCase);
         var originals = CollectObjectsAt(occupied, replacingPrefabs);
         originals.UnionWith(CollectVegetationAt(occupied));
-        var destinationGround = DestinationGround.Capture(file, originals, ShouldImportTerrain);
+        var destinationGround = DestinationGround.Capture(file, originals);
         var cellsWithoutTerrain = DestinationSupportPolicy.GetUnreplacedCells(file,
-            occupied.Select(cell => (cell.x, cell.y)), ShouldImportTerrain,
+            occupied.Select(cell => (cell.x, cell.y)),
             (x, y) => (Mathf.RoundToInt(x), Mathf.RoundToInt(y)));
         // Editor-created furniture (including wells) may have no terrain in
         // its JSON. Snapshot the actual destination layers before clearing them;
         // never invent grass or carry trees/plants along with the ground.
+        var incomingSlots = new HashSet<(int, int, PlacementSlot)>();
+        foreach (var item in file.supportingTerrain)
+            incomingSlots.Add((item.x, item.y, StructureEditorUI.GetPlacementSlot(item.prefabName)));
+        foreach (var item in file.objects)
+            foreach (var cell in StructureEditorUI.GetObjectCells(item))
+                incomingSlots.Add((cell.x, cell.y, StructureEditorUI.GetPlacementSlot(item.prefabName)));
         var destinationSupport = CreateObjectRecords(originals.Where(item =>
         {
             if (!IsTerrainObject(item)) return false;
             var cell = item.transform.GetVector2IntPosition();
-            return cellsWithoutTerrain.Contains((cell.x, cell.y));
+            PlacementSlot slot = StructureEditorUI.GetPlacementSlot(SerializationManager.GetPrefabName(item));
+            return cellsWithoutTerrain.Contains((cell.x, cell.y)) &&
+                (slot == PlacementSlot.None || !incomingSlots.Contains((cell.x, cell.y, slot)));
         }));
+        // A water overlay alone carries the destination floor, not a second
+        // water overlay. Never introduce a duplicate via carried support either.
+        ValidatePlacement(new StructureFile { objects = file.objects.Concat(destinationSupport).ToList(),
+            supportingTerrain = file.supportingTerrain });
         // Snapshot before destroying anything. This can fail harmlessly if an
         // original cannot be serialized or reconstructed.
         var backup = CreateObjectRecords(originals);
@@ -550,7 +563,6 @@ internal static class StructureTransfer
                 .SelectMany(StructureEditorUI.GetObjectCells)
                 .Concat((file.supportingTerrain ??
                          new List<SupportingTerrain>())
-                    .Where(item => ShouldImportTerrain(item.prefabName))
                     .Select(item => new Vector2Int(item.x, item.y)))
                 .ToHashSet();
         }
@@ -561,7 +573,7 @@ internal static class StructureTransfer
     }
 
     internal static void ValidateImportFiles(
-        IEnumerable<StructureFile> files)
+        IEnumerable<StructureFile> files, bool enforcePlacement = false)
     {
         HashSet<string> missingPrefabs =
             new(StringComparer.OrdinalIgnoreCase);
@@ -588,8 +600,6 @@ internal static class StructureTransfer
             foreach (SupportingTerrain terrain in
                      file.supportingTerrain ?? new List<SupportingTerrain>())
             {
-                if (!ShouldImportTerrain(terrain.prefabName))
-                    continue;
                 ValidatePosition(
                     terrain.x, terrain.y, terrain.z, terrain.prefabName);
                 if (Plugin.ResolvePrefab(terrain.prefabName) == null)
@@ -597,6 +607,7 @@ internal static class StructureTransfer
                 ValidateComponentData(
                     terrain.components, terrain.prefabName);
             }
+            if (enforcePlacement) ValidatePlacement(file);
         }
 
         if (missingPrefabs.Count > 0)
@@ -605,6 +616,14 @@ internal static class StructureTransfer
                 "prefabs are unavailable: " +
                 string.Join(", ", missingPrefabs.OrderBy(
                     name => name, StringComparer.OrdinalIgnoreCase)));
+    }
+
+    private static void ValidatePlacement(StructureFile file)
+    {
+        string? conflict = StructurePlacementPolicy.FindConflict(file,
+            StructureEditorUI.GetPlacementSlot);
+        if (conflict != null)
+            throw new InvalidDataException("Import cancelled before changing the world. " + conflict);
     }
 
     private static void ValidatePosition(
@@ -720,6 +739,7 @@ internal static class StructureTransfer
                       gameObject.GetComponent<ConstructionSite>() != null ||
                       gameObject.GetComponent<StructureRailingState>() != null ||
                       gameObject.GetComponent<Sign>() != null ||
+                      gameObject.GetComponent<WorldItem>() != null ||
                       IsPlayerPlacedFurniture(gameObject)))
             .Distinct()
             .ToList();
@@ -855,6 +875,8 @@ internal static class StructureTransfer
         Vector2Int position)
     {
         string prefabName = SerializationManager.GetPrefabName(gameObject);
+        if (!WaterExportPolicy.ShouldIncludeTerrain(prefabName, Plugin.ExportOtherWaterTiles.Value))
+            return;
         if (!seen.Add((position.x, position.y, prefabName.ToLowerInvariant())))
             return;
 
@@ -882,9 +904,6 @@ internal static class StructureTransfer
 
         foreach (SupportingTerrain terrain in supportingTerrain)
         {
-            if (!ShouldImportTerrain(terrain.prefabName))
-                continue;
-
             GameObject? prefab = Plugin.ResolvePrefab(terrain.prefabName);
             if (prefab == null)
                 throw new InvalidDataException("Missing supporting terrain prefab: " + terrain.prefabName);
@@ -894,6 +913,7 @@ internal static class StructureTransfer
                 new Vector3(terrain.x, terrain.y, terrain.z),
                 prefab.transform.rotation);
             createdObjects.Add(gameObject);
+            ImportedPrefabLifecycle.Prepare(gameObject, prefab.name);
             ApplyComponentRecords(
                 gameObject, terrain.components, terrain.prefabName);
             if (terrain.hasMapZoneName)
@@ -901,18 +921,6 @@ internal static class StructureTransfer
             StructureSaveState.TrackAppearance(gameObject, terrain.prefabName,
                 terrain.spriteVariantIndex, false, terrain.lockSpriteVariant);
         }
-    }
-
-    private static bool ShouldImportTerrain(string prefabName)
-    {
-        bool isWater = prefabName.Contains(
-            "water", StringComparison.OrdinalIgnoreCase);
-        if (!isWater)
-            return true;
-
-        bool isBathhouseWater = prefabName.Contains(
-            "water_bathhouse", StringComparison.OrdinalIgnoreCase);
-        return isBathhouseWater || Plugin.ImportOtherWaterTiles.Value;
     }
 
     internal static List<StructureObject> CreateObjectRecords(
@@ -1114,6 +1122,7 @@ internal static class StructureTransfer
                     prefab, position, prefab.transform.rotation);
             }
             createdObjects.Add(gameObject);
+            ImportedPrefabLifecycle.Prepare(gameObject, prefab.name);
             ApplyComponentRecords(
                 gameObject, record.components, record.prefabName);
 
@@ -1131,7 +1140,6 @@ internal static class StructureTransfer
                 SetMapZoneName(gameObject, record.mapZoneName);
             StructureSaveState.TrackAppearance(gameObject, record.prefabName,
                 record.spriteVariantIndex, record.npcInteractionRangeExtender, record.lockSpriteVariant);
-            RailingPrefab.ActivateImportedInstance(gameObject);
             count++;
         }
 

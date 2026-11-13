@@ -27,12 +27,12 @@ public sealed class Plugin : BaseUnityPlugin
 {
     public const string PluginGuid = "renegadex.silverpine.customstructures";
     public const string PluginName = "Structure Handler";
-    public const string PluginVersion = "1.2.12";
+    public const string PluginVersion = "1.2.26";
     public const int EditorApiVersion = 2;
 
     internal static ManualLogSource Log = null!;
     internal static Plugin Instance = null!;
-    internal static ConfigEntry<bool> ImportOtherWaterTiles = null!;
+    internal static ConfigEntry<bool> ExportOtherWaterTiles = null!;
     internal static readonly HashSet<Vector2Int> ProtectedWorldTiles = new();
     internal static readonly HashSet<Vector2Int> BuildableWorldTiles = new();
     internal static string StructuresDirectory =>
@@ -125,14 +125,12 @@ public sealed class Plugin : BaseUnityPlugin
 
     private void Awake()
     {
+        StructureItemQuality.InstallTypeResolver();
         Instance = this;
         Log = Logger;
+        MarketCrates.Install();
         RailingPrefab.EnsureRegistered();
-        ImportOtherWaterTiles = Config.Bind(
-            "Import",
-            "ImportOtherWaterTiles",
-            false,
-            "Import ordinary water terrain. Bathhouse water is always imported.");
+        ExportOtherWaterTiles = WaterExportSettings.Bind(Config);
         StructureSaveState.Initialize();
         Directory.CreateDirectory(StructuresDirectory);
         SceneManager.sceneLoaded += ClearPrefabFallbacks;

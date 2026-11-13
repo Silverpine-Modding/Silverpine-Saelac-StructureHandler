@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\EditorCoordinateDraft.cs" Link="EditorCoordinateDraft.cs" />
+    <Compile Include="..\..\StructureEditorCoordinates.cs" Link="StructureEditorCoordinates.cs" />
+    <Compile Include="..\..\StructureEditorTextFields.cs" Link="StructureEditorTextFields.cs" />
+    <Compile Include="..\..\StructureEditorTextInput.cs" Link="StructureEditorTextInput.cs" />
+  </ItemGroup>
+</Project>

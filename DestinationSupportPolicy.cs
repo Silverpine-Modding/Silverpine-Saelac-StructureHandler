@@ -7,15 +7,16 @@ namespace StructureHandler;
 internal static class DestinationSupportPolicy
 {
     internal static HashSet<(int X, int Y)> GetUnreplacedCells(StructureFile file,
-        IEnumerable<(int X, int Y)> occupied, Func<string, bool> includeTerrain,
+        IEnumerable<(int X, int Y)> occupied,
         Func<float, float, (int X, int Y)> cellOf)
     {
         var cells = new HashSet<(int X, int Y)>(occupied);
         // An editor object does not implicitly supply a floor. Only incoming
-        // terrain that will actually be instantiated replaces destination ground.
+        // ground that will actually be instantiated replaces destination ground.
+        // Bath/shallow water are overlays: retain destination ground beneath them.
         // Check both lists for old/raw JSONs, without changing the portable file.
         foreach (var item in file.supportingTerrain)
-            if (IsTerrain(item.prefabName) && includeTerrain(item.prefabName))
+            if (IsTerrain(item.prefabName))
                 cells.Remove((item.x, item.y));
         foreach (var item in file.objects)
             if (IsTerrain(item.prefabName))
@@ -24,5 +25,5 @@ internal static class DestinationSupportPolicy
     }
 
     private static bool IsTerrain(string name) =>
-        name.StartsWith("prefab_tile_", StringComparison.OrdinalIgnoreCase);
+        StructurePlacementPolicy.Slot(name) == PlacementSlot.Ground;
 }

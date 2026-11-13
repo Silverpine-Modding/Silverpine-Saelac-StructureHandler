@@ -89,7 +89,7 @@ internal sealed partial class StructureControlsUI :
             () => CloseAndRun(() => StructureTransfer.ToggleBottomRight(_ => { })));
         AddButton(template, WaterLabel(), () =>
         {
-            Plugin.ImportOtherWaterTiles.Value = !Plugin.ImportOtherWaterTiles.Value;
+            Plugin.ExportOtherWaterTiles.Value = !Plugin.ExportOtherWaterTiles.Value;
             Rebuild(inventory);
         });
         AddButton(template, RegenerationLabel(), () =>
@@ -162,7 +162,7 @@ internal sealed partial class StructureControlsUI :
     }
 
     private static string WaterLabel() =>
-        $"Import Other Water Tiles: {(Plugin.ImportOtherWaterTiles.Value ? "On" : "Off")}";
+        $"Export Other Water Tiles: {(Plugin.ExportOtherWaterTiles.Value ? "On" : "Off")}";
     private static string RegenerationLabel()
     {
         if (!Plugin.TryGetPlayerWorldTile(out Vector2Int worldTile))

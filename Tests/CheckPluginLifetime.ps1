@@ -32,6 +32,307 @@ try {
         $references = @($body.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] } | ForEach-Object { $_.Operand.FullName })
         if (-not ($references | Where-Object { $_ -match $expected })) { throw "$type.$method does not call $expected" }
     }
+    [xml]$projectXml = Get-Content -Raw -LiteralPath (Join-Path $projectRoot 'StructureHandler.csproj')
+    $projectVersion = [string]$projectXml.Project.PropertyGroup.Version
+    $pluginVersion = ($plugin.Fields | Where-Object Name -eq 'PluginVersion').Constant
+    $pluginAttribute = $plugin.CustomAttributes | Where-Object { $_.AttributeType.Name -eq 'BepInPlugin' }
+    if ($pluginVersion -ne $projectVersion -or $pluginAttribute.ConstructorArguments[2].Value -ne $projectVersion -or
+        $assembly.Name.Version.ToString(3) -ne $projectVersion) { throw 'Plugin, assembly and project versions disagree.' }
+    'PASS BepInEx startup identity, compiled assembly and project version agree.'
+    Assert-MethodCalls 'Plugin' 'Awake' 'MarketCrates::Install'
+    foreach ($method in @('Reset','Capture','Restore')) {
+        Assert-MethodCalls 'StructureSaveState' $method ('MarketCrates::' + $method)
+    }
+    Assert-MethodCalls 'StructureSaveState' 'OnLoaded' 'MarketCrates::Reconcile'
+    $markets = $assembly.MainModule.Types | Where-Object FullName -eq 'StructureHandler.MarketCrates'
+    $marketInstall = $markets.Methods | Where-Object Name -eq 'Install'
+    $marketPatches = @($marketInstall.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.TypeReference] } | ForEach-Object { $_.Operand.Name })
+    foreach ($required in @('MarketCrateIdentityStartPatch','MarketCrateIdentityDestroyPatch','MarketCrateStartPatch',
+        'MarketCrateDeserializePatch','MarketCrateDestroyPatch','MarketCrateHourPatch','MarketCrateBoardPatch')) {
+        if ($marketPatches -notcontains $required) { throw "Missing shared market patch: $required" }
+    }
+    foreach ($methodName in @('RemoveIdentity','Unregister')) {
+        $body = $markets.Methods | Where-Object Name -eq $methodName
+        # Release compilation folds ReferenceEquals into a reference branch.
+        $ownerGuard = @($body.Body.Instructions | Where-Object {
+            $_.OpCode.Name -like 'bne.un*' -and $_.Previous.Operand -is [Mono.Cecil.MethodReference] -and
+            $_.Previous.Operand.Name -eq 'get_gameObject'
+        })
+        $removeKey = @($body.Body.Instructions | Where-Object {
+            $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'Remove' -and
+            $_.Operand.DeclaringType.Name -eq 'Dictionary`2'
+        })
+        if ($ownerGuard.Count -ne 1 -or $removeKey.Count -ne 1 -or $ownerGuard[0].Offset -ge $removeKey[0].Offset -or
+            $ownerGuard[0].Operand.Offset -le $removeKey[0].Offset) { throw "$methodName lost its identity-owner guard." }
+    }
+    Assert-MethodCalls 'MarketCrates' 'RemoveIdentity' 'MarketCrates::PromoteIdentity'
+    Assert-MethodCalls 'MarketCrates' 'SellAllStock' 'SharedMarketBook::TryBegin'
+    Assert-MethodCalls 'MarketCrates' 'SellAllStock' 'SharedMarketBook::Bind'
+    'PASS Shared markets install all lifecycle hooks, owner-checked identity removal, one-cycle guard and per-save board reset/capture/restore.'
+    foreach ($methodName in @('InstantiateSupportingTerrain','InstantiateObjectRecords')) {
+        $type = $assembly.MainModule.Types | Where-Object FullName -eq 'StructureHandler.StructureTransfer'
+        $body = $type.Methods | Where-Object Name -eq $methodName
+        $ordered = @($body.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] } | ForEach-Object { $_.Operand.FullName })
+        $prepareIndex = [Array]::FindIndex($ordered, [Predicate[object]]{ param($call) $call -match 'ImportedPrefabLifecycle::Prepare' })
+        $deserializeIndex = [Array]::FindIndex($ordered, [Predicate[object]]{ param($call) $call -match 'StructureTransfer::ApplyComponentRecords' })
+        $trackedIndex = [Array]::FindIndex($ordered, [Predicate[object]]{ param($call) $call -match 'ICollection`1<UnityEngine.GameObject>::Add' })
+        if ($trackedIndex -lt 0 -or $prepareIndex -le $trackedIndex -or $deserializeIndex -le $prepareIndex) {
+            throw "$methodName must track rollback first, then prepare the mod prefab before deserializing components."
+        }
+    }
+    Assert-MethodCalls 'ImportedPrefabLifecycle' 'Prepare' 'SerializablePrefabs::TryGetRegistration'
+    Assert-MethodCalls 'ImportedPrefabLifecycle' 'Prepare' 'SerializablePrefabOptions::get_ActivateLoadedInstances'
+    Assert-MethodCalls 'ImportedPrefabLifecycle' 'Prepare' 'SerializablePrefabOptions::get_OnInstanceRestored'
+    'PASS Terrain/object imports and rollback activate registered mod clones before Deserialize, after recording rollback ownership.'
+    Assert-MethodCalls 'Plugin' 'Awake' 'WaterExportSettings::Bind'
+    Assert-MethodCalls 'StructureTransfer' 'AddTerrainRecord' 'WaterExportPolicy::ShouldIncludeTerrain'
+    Assert-MethodCalls 'StructureTransfer' 'FindSupportingTerrain' 'StructureTransfer::AddTerrainRecord'
+    $transferType = $assembly.MainModule.Types | Where-Object FullName -eq 'StructureHandler.StructureTransfer'
+    if ($transferType.Methods.Name -contains 'ShouldImportTerrain' -or $plugin.Fields.Name -contains 'ImportOtherWaterTiles') {
+        throw 'Legacy runtime water import filtering is still present.'
+    }
+    function Get-WaterCheckTypes($types) {
+        foreach ($type in $types) { $type; Get-WaterCheckTypes $type.NestedTypes }
+    }
+    $allWaterCheckMethods = @(Get-WaterCheckTypes $assembly.MainModule.Types | ForEach-Object { $_.Methods } | Where-Object HasBody)
+    foreach ($method in $allWaterCheckMethods) {
+        foreach ($instruction in $method.Body.Instructions) {
+            if ($instruction.Operand -is [Mono.Cecil.MethodReference] -and
+                $instruction.Operand.DeclaringType.Name -eq 'WaterExportPolicy' -and
+                $method.Name -ne 'AddTerrainRecord') {
+                throw "Export filtering escaped into $($method.FullName)."
+            }
+            if ($instruction.OpCode.Name -eq 'ldsfld' -and $instruction.Operand.Name -eq 'ExportOtherWaterTiles' -and
+                $method.Name -ne 'AddTerrainRecord' -and $method.DeclaringType.FullName -notlike 'StructureHandler.StructureControlsUI*') {
+                throw "Export setting is read outside export/menu code: $($method.FullName)."
+            }
+        }
+    }
+    'PASS Water preference is wired only to world export collection/menu, never import, queue, editor save or persistence paths.'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawRecords' 'StructureEditorUI::DrawZoneColors'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawZoneColors' 'ZonePreview::Build'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawZoneBrushControls' 'GUILayout::Toggle'
+    Assert-MethodCalls 'StructureEditorUI' 'Close' 'StructureEditorUI::ClearZoneColors'
+    Assert-MethodCalls 'StructureEditorUI' 'OnFrameworkSessionClosed' 'StructureEditorUI::ClearZoneColors'
+    $zonePreviewType = $assembly.MainModule.Types | Where-Object FullName -eq 'StructureHandler.StructureEditorUI'
+    $drawZone = $zonePreviewType.Methods | Where-Object Name -eq 'DrawZoneColors'
+    if (-not ($drawZone.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.FieldReference] -and $_.Operand.Name -eq 'showZoneColors' }) -or
+        ($drawZone.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'MarkStructureDirty' })) {
+        throw 'Zone colors must be guarded by their own display-only toggle.'
+    }
+    'PASS Named-zone colors have an independent display toggle, revision-cached rendering and cache cleanup on close.'
+    Assert-MethodCalls 'StructureEditorUI' 'IsPreviewLightingEffect' 'PreviewLightingPolicy::IsLightingEffect'
+    Assert-MethodCalls 'StructureEditorUI' 'IsPreviewLightingEffect' 'PreviewLightingPolicy::IsFakeAO'
+    Assert-MethodCalls 'StructureEditorUI' 'IsPreviewLightingEffect' 'Transform::get_parent'
+    Assert-MethodCalls 'StructureEditorUI' 'AddPreviewCommands' 'PreviewLightingPolicy::IsFakeAO'
+    $editor = $assembly.MainModule.Types | Where-Object FullName -eq 'StructureHandler.StructureEditorUI'
+    $editorMethods = @($editor.Methods) + @($editor.NestedTypes | ForEach-Object { $_.Methods })
+    $filterCalls = @($editorMethods | Where-Object HasBody | ForEach-Object { $_.Body.Instructions } | Where-Object {
+        $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'IsPreviewLightingEffect'
+    })
+    if ($filterCalls.Count -eq 0) { throw 'Preview renderer collection no longer calls its lighting filter.' }
+    'PASS Preview collection filters FakeAO renderer/sprite identities and parent containers; variant drawing also rejects FakeAO.'
+    $filter = $editor.Methods | Where-Object Name -eq 'IsPreviewLightingEffect'
+    $mutations = @($filter.Body.Instructions | Where-Object {
+        $_.OpCode.Name -in @('stfld', 'stsfld') -or
+        ($_.Operand -is [Mono.Cecil.MethodReference] -and
+            ($_.Operand.Name -like 'set_*' -or $_.Operand.Name -in @('Destroy', 'SetActive', 'SetPropertyBlock')))
+    })
+    if ($mutations.Count -gt 0) { throw 'The preview filter must not modify native prefab/rendering state.' }
+    'PASS Preview lighting filter only reads prefab metadata; native renderers and materials are not modified.'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawSelectedObject' 'StructureEditorUI::DrawFurnitureCollision'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawFurnitureCollision' 'FurnitureCollision::TryReadEnabled'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawFurnitureCollision' 'FurnitureCollision::SetEnabled'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawFurnitureCollision' 'StructureEditorUI::MarkStructureDirty'
+    Assert-MethodCalls 'StructureTransfer' 'InstantiateObjectRecords' 'StructureTransfer::ApplyComponentRecords'
+    Assert-MethodCalls 'StructureTransfer' 'ApplyComponentRecords' 'ISerializableMonoBehavior::Deserialize'
+    Assert-MethodCalls 'StructureTransfer' 'CreateComponentRecords' 'ISerializableMonoBehavior::Serialize'
+    'PASS Furniture toggle is wired to undoable component edits and the existing native import/export serializer path.'
+    $collisionUI = $editor.Methods | Where-Object Name -eq 'DrawFurnitureCollision'
+    $collisionCalls = @($collisionUI.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] } | ForEach-Object { $_.Operand.FullName })
+    if ($collisionUI.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'stfld' -and $_.Operand.DeclaringType.Name -eq 'TurfCollider' }) {
+        throw 'Editor collision toggle must not edit native prefab flags.'
+    }
+    if ($collisionCalls | Where-Object { $_ -match 'AddComponent|Destroy|SetActive|StructureSaveState|ModSaveData' }) {
+        throw 'Editor collision toggle must not mutate prefab components or create companion overrides.'
+    }
+    'PASS Furniture collision editor neither mutates prefab components nor adds companion save overrides.'
+    Assert-MethodCalls 'StructureEditorUI' 'GetSpritePreviews' 'SortingLayer::GetLayerValueFromID'
+    Assert-MethodCalls 'StructureEditorUI' 'AddPreviewCommands' 'PreviewSortKey::YOrder'
+    Assert-MethodCalls 'StructureEditorUI' 'AddPreviewCommands' 'PreviewSortKey::RotationOffset'
+    Assert-MethodCalls 'StructureEditorUI' 'EnsureRenderOrder' 'StructureEditorUI::AddPreviewCommands'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawRecords' 'StructureEditorUI::EnsureRenderOrder'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawPrefabSprite' 'GUIUtility::RotateAroundPivot'
+    'PASS Compiled preview uses native layer priorities, global sprite-part ordering, Y offsets and transformed quads.'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawPreviewPanel' 'StructureEditorUI::DrawCachedPreview'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawCachedPreview' 'StructureEditorUI::ProcessItemPreviewQueue'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawCachedPreview' 'StructureEditorUI::RenderPreviewSurface'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawCachedPreview' 'StructureEditorUI::DrawPreviewContents'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawPrefabSprite' 'StructureEditorUI::DrawPreviewQuad'
+    Assert-MethodCalls 'StructureEditorUI' 'ClearRenderCaches' 'StructureEditorUI::ReleasePreviewSurface'
+    Assert-MethodCalls 'StructureEditorUI' 'ClearItemEditor' 'EditorWorkQueue`1<StructureHandler.StructureObject>::Clear'
+    Assert-MethodCalls 'StructureEditorUI' 'GenerateItemPreview' 'StructureEditorUI::BuildItemVisual'
+    Assert-MethodCalls 'StructureEditorUI' 'ProcessItemPreviewQueue' 'Time::get_frameCount'
+    Assert-MethodCalls 'StructureEditorUI' 'ProcessItemPreviewQueue' 'StructureEditorUI::InvalidateVisuals'
+    $addItemPreview = $editor.Methods | Where-Object Name -eq 'AddItemPreviewCommands'
+    if ($addItemPreview.Body.Instructions | Where-Object {
+        $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -in @('Read', 'BuildItemVisual', 'GetPreview')
+    }) { throw 'Item previews are still generated synchronously while sorting the document.' }
+    $renderSurface = $editor.Methods | Where-Object Name -eq 'RenderPreviewSurface'
+    if (-not ($renderSurface.Body.ExceptionHandlers | Where-Object HandlerType -eq 'Finally')) {
+        throw 'Preview rendering must restore render target and GL/GUI state even after an exception.'
+    }
+    foreach ($method in @('DrawSelectedObject', 'DrawSelectedTerrain', 'DrawSelectedItem')) {
+        Assert-MethodCalls 'StructureEditorUI' $method 'StructureEditorUI::CoordinateTextField'
+    }
+    Assert-MethodCalls 'StructureEditorUI' 'CoordinateTextField' 'StructureEditorUI::EditTextField'
+    Assert-MethodCalls 'StructureEditorUI' 'CoordinateTextField' 'GUIUtility::set_keyboardControl'
+    Assert-MethodCalls 'StructureEditorUI' 'CoordinateTextField' 'EditorCoordinateDraft::Observe'
+    Assert-MethodCalls 'StructureEditorUI' 'EditTextField' 'StructureEditorUI::TextFieldAction'
+    Assert-MethodCalls 'StructureEditorUI' 'EditTextField' 'GUIUtility::get_keyboardControl'
+    Assert-MethodCalls 'StructureEditorUI' 'EditTextField' 'Event::get_keyCode'
+    $coordinateInput = $editor.Methods | Where-Object Name -eq 'CoordinateTextField'
+    if ($coordinateInput.Body.Instructions | Where-Object {
+        $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'GetNameOfFocusedControl'
+    }) { throw 'Coordinate submission must not use a pre-draw focus-name lookup.' }
+    'PASS Preview surface has fallback/cleanup, items use frame-budgeted jobs, and coordinate fields stage focused Enter commits.'
+    Assert-MethodCalls 'StructureEditorUI' 'LabeledTextField' 'StructureEditorUI::EditorTextField'
+    Assert-MethodCalls 'StructureEditorUI' 'EditorTextField' 'StructureEditorUI::EditTextField'
+    Assert-MethodCalls 'StructureEditorUI' 'EditTextField' 'GUIUtility::GetControlID'
+    Assert-MethodCalls 'StructureEditorUI' 'EditTextField' '(String|Object)::GetHashCode'
+    Assert-MethodCalls 'StructureEditorUI' 'EditTextField' 'StructureEditorUI::SelectWholeField'
+    Assert-MethodCalls 'StructureEditorUI' 'SelectWholeField' 'TextEditor::SelectAll'
+    Assert-MethodCalls 'StructureEditorUI' 'HandlePreviewInput' 'GUIUtility::get_hotControl'
+    'PASS Coordinate/prefab fields use namespaced control IDs and full-text selection; preview input respects captured text drags.'
+    Assert-MethodCalls 'StructureEditorUI' 'OnGUI' 'StructureEditorUI::BeginEditorTextInput'
+    Assert-MethodCalls 'StructureEditorUI' 'BeginEditorTextInput' 'StructureEditorUI::ReleaseEditorTextMouse'
+    Assert-MethodCalls 'StructureEditorUI' 'BeginEditorTextInput' 'Event::get_rawType'
+    Assert-MethodCalls 'StructureEditorUI' 'EditTextField' 'StructureEditorUI::RebindEditorTextFocus'
+    Assert-MethodCalls 'StructureEditorUI' 'EditTextField' 'StructureEditorUI::TrackEditorTextInput'
+    Assert-MethodCalls 'StructureEditorUI' 'RebindEditorTextFocus' 'StructureEditorUI::TransferEditorTextState'
+    Assert-MethodCalls 'StructureEditorUI' 'ClearRenderCaches' 'StructureEditorUI::ClearEditorTextInput'
+    $textInputCalls = @(($editor.Methods | Where-Object Name -eq 'EditTextField').Body.Instructions | Where-Object {
+        $_.Operand -is [Mono.Cecil.MethodReference]
+    } | ForEach-Object { $_.Operand })
+    $idCalls = @($textInputCalls | Where-Object { $_.Name -eq 'GetControlID' })
+    if ($idCalls.Count -ne 1 -or $idCalls[0].Parameters.Count -ne 2) {
+        throw 'Text field IDs must not depend on changing layout rectangles.'
+    }
+    $guiCalls = @(($editor.Methods | Where-Object Name -eq 'OnGUI').Body.Instructions | Where-Object {
+        $_.Operand -is [Mono.Cecil.MethodReference]
+    } | ForEach-Object { $_.Operand.Name })
+    if ([Array]::IndexOf($guiCalls, 'BeginEditorTextInput') -gt [Array]::IndexOf($guiCalls, 'DrawFilePanel')) {
+        throw 'Text-capture recovery must run before other controls can process the click.'
+    }
+    'PASS Text drag ownership is released before controls, rebound with native selection, and cleaned up on both editor close paths.'
+    Assert-MethodCalls 'StructureEditorUI' 'EnsureRenderOrder' 'StructureEditorUI::RebuildPreviewIndex'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawRecords' 'StructureEditorUI::EnsureVisiblePreview'
+    Assert-MethodCalls 'StructureEditorUI' 'EnsureVisiblePreview' 'PreviewSpatialIndex::Query'
+    Assert-MethodCalls 'StructureEditorUI' 'RebuildPreviewIndex' 'StructureEditorUI::PrepareSprite'
+    Assert-MethodCalls 'StructureEditorUI' 'CheckPlacement' 'StructureEditorUI::CollectPlacementCandidates'
+    Assert-MethodCalls 'StructureEditorUI' 'IndexPlacementRecord' 'StructureEditorUI::Profile'
+    Assert-MethodCalls 'StructureEditorUI' 'FlushHistory' 'EditorDocumentHistory::Record'
+    Assert-MethodCalls 'StructureEditorUI' 'RestoreEditorSnapshot' 'EditorDocumentCopy::Clone'
+    Assert-MethodCalls 'StructureEditorUI' 'RebuildPreviewIndex' 'StructureEditorUI::PruneItemPreviews'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawFilePanel' 'StructureAlgorithms::VisibleRows'
+    foreach ($closeMethod in @('Close', 'OnFrameworkSessionClosed')) {
+        Assert-MethodCalls 'StructureEditorUI' $closeMethod 'StructureEditorUI::ClearRenderCaches'
+    }
+    $drawSprite = $editor.Methods | Where-Object Name -eq 'DrawPrefabSprite'
+    $drawCalls = @($drawSprite.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] } | ForEach-Object { $_.Operand.FullName })
+    if ($drawCalls | Where-Object { $_ -match 'Sprite::get_|Texture::get_width|Texture::get_height|StringSerializationAPI' }) {
+        throw 'Per-sprite repaint is re-reading native sprite/texture geometry or serializing data.'
+    }
+    foreach ($method in @('FlushHistory', 'RestoreEditorSnapshot')) {
+        $body = $editor.Methods | Where-Object Name -eq $method
+        if ($body.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.DeclaringType.Name -eq 'StringSerializationAPI' }) {
+            throw "$method must not use JSON serialization for undo snapshots."
+        }
+    }
+    'PASS Editor uses visibility/placement indexes, prepared sprite data, virtual files and in-memory history; both close paths release caches.'
+    foreach ($method in @('PlaceBrushObject', 'AddObject', 'DrawSelectedObject')) {
+        Assert-MethodCalls 'StructureEditorUI' $method 'StructureEditorUI::PlaceEditorObject'
+    }
+    Assert-MethodCalls 'StructureEditorUI' 'DrawSelectedObject' 'StructureEditorUI::ChangeObjectPlacement'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawSelectedTerrain' 'StructureEditorUI::ChangeTerrainPlacement'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawSelectedTerrain' 'StructureEditorUI::PlaceEditorTerrain'
+    Assert-MethodCalls 'StructureEditorUI' 'PlaceEditorObject' 'StructureEditorUI::CheckPlacement'
+    Assert-MethodCalls 'StructureEditorUI' 'PlaceEditorTerrain' 'StructureEditorUI::CheckPlacement'
+    Assert-MethodCalls 'StructureEditorUI' 'RemoveSlotOccupants' 'StructureEditorUI::CollectPlacementCandidates'
+    Assert-MethodCalls 'StructureEditorUI' 'RemoveSlotOccupants' 'StructureEditorUI::RecordOccupies'
+    Assert-MethodCalls 'StructureEditorUI' 'RemoveSlotOccupants' 'StructureEditorUI::RemoveIndexedRecords'
+    Assert-MethodCalls 'StructureEditorUI' 'CheckPlacement' 'StructurePlacementPolicy::Rejection'
+    Assert-MethodCalls 'StructureEditorUI' 'Save' 'StructureEditorUI::PlacementConflict'
+    Assert-MethodCalls 'StructureEditorUI' 'MoveToCoordinate' 'StructurePlacementPolicy::FindConflict'
+    'PASS Add, paint, move, rotate, duplicate and save paths are wired to placement checks.'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawPreviewPanel' 'StructureEditorUI::DrawPlacementRulesToggle'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawPlacementRulesToggle' 'GUILayout::Toggle'
+    Assert-MethodCalls 'StructureEditorUI' 'ShouldSnap' 'StructurePlacementPolicy::ShouldSnap'
+    foreach ($method in @('SnapEditorPosition','HandleItemInput','DrawNudgeControls')) {
+        Assert-MethodCalls 'StructureEditorUI' $method 'StructureEditorUI::ShouldSnap'
+    }
+    Assert-MethodCalls 'StructureEditorUI' 'DrawNudgeControls' 'StructurePlacementPolicy::NudgeStep'
+    foreach ($method in @('DrawSelectedObject','DrawSelectedItem')) {
+        Assert-MethodCalls 'StructureEditorUI' $method 'StructureEditorUI::DrawNudgeControls'
+    }
+    $nudge = $editor.Methods | Where-Object Name -eq 'DrawNudgeControls'
+    $directions = @($nudge.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'ldstr' } | ForEach-Object Operand)
+    foreach ($direction in @('Left','Right','Up','Down')) {
+        if ($directions -notcontains $direction) { throw "Shared nudge controls are missing $direction." }
+    }
+    $nudgeMoves = @($nudge.Body.Instructions | Where-Object {
+        $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'ChangeObjectPlacement'
+    })
+    if ($nudgeMoves.Count -ne 4) { throw 'All four item/object nudge buttons must use checked, undoable placement.' }
+    if ($nudge.Body.Instructions | Where-Object {
+        $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.DeclaringType.Name -eq 'StructureItemData'
+    }) { throw 'Nudging must not rewrite item payloads or apply pending item customization.' }
+    'PASS Items and objects share all four nudge buttons, the same step/toggle rules and undoable movement without changing item payloads.'
+    foreach ($method in @('CheckPlacement','PlaceBrushObject')) {
+        $body = $editor.Methods | Where-Object Name -eq $method
+        if (-not ($body.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'ldfld' -and $_.Operand.Name -eq 'ignorePlacementRules' })) {
+            throw "$method does not read the free-placement toggle."
+        }
+    }
+    foreach ($method in @('Close','OnFrameworkSessionClosed')) {
+        $body = $editor.Methods | Where-Object Name -eq $method
+        if (-not ($body.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'stfld' -and $_.Operand.Name -eq 'ignorePlacementRules' -and $_.Previous.OpCode.Name -eq 'ldc.i4.0' })) {
+            throw "$method does not restore safe placement defaults."
+        }
+    }
+    'PASS Free-placement toggle is wired to snapping, nudging, brush/item placement and native rejections, and resets on editor close.'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawDetailsPanel' 'StructureEditorUI::DrawItemsTab'
+    Assert-MethodCalls 'StructureEditorUI' 'HandlePreviewInput' 'StructureEditorUI::HandleItemInput'
+    Assert-MethodCalls 'StructureEditorUI' 'HandleItemInput' 'StructureEditorUI::PlaceEditorObject'
+    Assert-MethodCalls 'StructureEditorUI' 'HandleItemInput' 'StructureItemData::Create'
+    Assert-MethodCalls 'StructureEditorUI' 'EnsureRenderOrder' 'StructureEditorUI::AddItemPreviewCommands'
+    Assert-MethodCalls 'StructureEditorUI' 'SelectItemTemplate' 'LegacyStructureReader::Read'
+    Assert-MethodCalls 'StructureEditorUI' 'CustomizedItem' 'ItemCustomizationRules::ValidateText'
+    Assert-MethodCalls 'StructureEditorUI' 'CustomizedItem' 'ItemCustomizationRules::ValidateLetter'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawSelectedItem' 'StructureItemData::Write'
+    Assert-MethodCalls 'StructureEditorUI' 'Close' 'StructureEditorUI::ClearItemEditor'
+    Assert-MethodCalls 'StructureEditorUI' 'OnFrameworkSessionClosed' 'StructureEditorUI::ClearItemEditor'
+    Assert-MethodCalls 'Plugin' 'Awake' 'StructureItemQuality::InstallTypeResolver'
+    'PASS Items tab, placement, preview, customization validation and native persistence are wired; close releases editor caches.'
+    $itemMethods = @($editor.Methods | Where-Object Name -in @('SelectItemTemplate','HandleItemInput','CustomizedItem'))
+    $itemCodec = $assembly.MainModule.Types | Where-Object FullName -eq 'StructureHandler.StructureItemData'
+    Assert-MethodCalls 'StructureItemData' 'Storage' 'StructureItemData::ReadStorage'
+    Assert-MethodCalls 'StructureItemData' 'ReadItem' 'StructureItemData::ReadStorage'
+    $nativeAuditCalls = @($itemCodec.Methods | Where-Object HasBody | ForEach-Object { $_.Body.Instructions } | Where-Object {
+        $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.DeclaringType.Name -eq 'VersionSafeStorage' -and $_.Operand.Name -eq 'Deserialize'
+    })
+    if ($nativeAuditCalls.Count -ne 0) { throw 'Offline item codec still schedules the native unread-field diagnostic.' }
+    Assert-MethodCalls 'StructureItemData' 'ReadItem' 'ItemComponent::Deserialize'
+    'PASS Editor envelope reads avoid native unread-field callbacks while item components still run their real deserializers.'
+    $unsafeItemCalls = @(@($itemMethods) + @($itemCodec.Methods) | Where-Object HasBody | ForEach-Object { $_.Body.Instructions } |
+        Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -in @('OnUse','TryAddItem','DropItem','DeserializeSerializable','CallStarts','Instantiate') })
+    if ($unsafeItemCalls.Count -ne 0) { throw 'Offline item editing invoked a gameplay placement/inventory callback.' }
+    'PASS Offline item editing never instantiates world objects or invokes item-use, inventory-added or pool-Start callbacks.'
+    Assert-MethodCalls 'StructureTransfer' 'ApplyLoadedImport' 'StructureTransfer::ValidatePlacement'
+    Assert-MethodCalls 'StructureTransfer' 'ValidateImportFiles' 'StructureTransfer::ValidatePlacement'
+    Assert-MethodCalls 'StructureTransfer' 'ValidatePlacement' 'StructurePlacementPolicy::FindConflict'
+    Assert-MethodCalls 'StructureSaveState' 'ProcessLoadedTile' 'StructureTransfer::ValidateImportFiles'
+    'PASS Immediate and queued imports validate exclusive slots before mutation; generic reconstruction remains separate.'
     Assert-MethodCalls 'StructureReleasedPoolSavePatch' 'Postfix' 'NativeSavePolicy::RemoveReleased'
     Assert-MethodCalls 'StructureSaveLoadPatch' 'Prefix' 'TerrainRepair::RecordSavePath'
     Assert-MethodCalls 'StructurePrepareNativeSavePatch' 'Postfix' 'TerrainRepair::RecordSavePath'

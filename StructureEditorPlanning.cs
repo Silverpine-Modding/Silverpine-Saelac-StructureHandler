@@ -16,6 +16,9 @@ internal sealed partial class StructureEditorUI
     private readonly Dictionary<Vector2Int, Color> planningColors = new();
     private int transitionOverlapCount;
     private GUIStyle? planningTextStyle;
+    private readonly List<(Vector2Int Cell, bool Transition, bool Painted, Color Color)> visiblePlanning = new();
+    private (int Left, int Right, int Bottom, int Top, bool Show) planningViewport;
+    private bool planningViewportValid;
     private static readonly string[] PlanningPalette =
         { "#FFD54F", "#FF5252", "#FF9F43", "#66DD88", "#55CCEE", "#AA88FF", "#FF88BB", "#FFFFFF" };
     private static readonly string[] PlanningPaletteNames =
@@ -29,6 +32,7 @@ internal sealed partial class StructureEditorUI
 
     private void StartPlanningBrush(bool erase)
     {
+        itemBrush = false;
         StopZoneBrush();
         planningBrush = true;
         planningEraser = erase;
@@ -67,7 +71,7 @@ internal sealed partial class StructureEditorUI
             GUILayout.EndHorizontal();
         }
         GUILayout.Label("Custom color (#RRGGBB)");
-        customPlanningColor = GUILayout.TextField(customPlanningColor, 7);
+        customPlanningColor = EditorTextField(customPlanningColor, "StructureHandler.planningColor", 7);
         if (GUILayout.Button("Paint custom color"))
         {
             if (PlanningTiles.TryColor(customPlanningColor, out string color))
@@ -85,7 +89,8 @@ internal sealed partial class StructureEditorUI
             if (structure!.planningTiles.Count > 0)
             {
                 structure.planningTiles.Clear();
-                MarkStructureDirty();
+                planningIndex.Clear(); planningColors.Clear();
+                MarkPlanningDirty();
                 status = "Planning colors cleared. Undo restores them.";
             }
         }
@@ -144,11 +149,19 @@ internal sealed partial class StructureEditorUI
                 }
                 changed = true;
             }
-            if (changed) { brushStroke = true; MarkStructureDirty(); }
+            if (changed) { brushStroke = true; MarkPlanningDirty(); }
             lastPlanningCell = cell;
             current.Use();
         }
         return true;
+    }
+
+    private void MarkPlanningDirty()
+    {
+        planningViewportValid = false;
+        MarkStructureDirty(geometryChanged: false, zonesChanged: false);
+        // Only a planning-only document derives its reference point from marks.
+        if (structure!.objects.Count == 0 && structure.supportingTerrain.Count == 0) geometryDirty = true;
     }
 
     private void DrawPlanningOverlay(Rect preview, Vector2 center)
@@ -158,34 +171,45 @@ internal sealed partial class StructureEditorUI
         int right = Mathf.FloorToInt(origin.x + (preview.xMax - center.x) / zoom + 0.5f);
         int bottom = Mathf.CeilToInt(origin.y - (preview.yMax - center.y) / zoom - 0.5f);
         int top = Mathf.FloorToInt(origin.y - (preview.yMin - center.y) / zoom + 0.5f);
-        Color old = GUI.color;
-        // Work is bounded by the visible viewport, not document size. Draw after
-        // sprites so neither a wall nor a floor can hide a planning/warning cell.
-        for (int x = left; x <= right; x++)
-        for (int y = bottom; y <= top; y++)
+        var viewport = (left, right, bottom, top, showPlanning);
+        if (!planningViewportValid || !planningViewport.Equals(viewport))
         {
-            Vector2Int cell = new(x, y);
-            bool transition = PlanningTiles.IsTransitionCell(x, y);
-            bool painted = showPlanning && planningColors.ContainsKey(cell);
-            if (!transition && !painted) continue;
-            Vector2 point = WorldToPreview(center, x, y);
-            Rect square = new(point.x - zoom / 2, point.y - zoom / 2, zoom, zoom);
-            if (painted)
+            visiblePlanning.Clear();
+            for (int x = left; x <= right; x++)
+            for (int y = bottom; y <= top; y++)
             {
-                Color tint = planningColors[cell]; tint.a = 0.38f;
-                GUI.color = tint;
-                GUI.DrawTexture(square, Texture2D.whiteTexture);
+                Vector2Int cell = new(x, y);
+                bool transition = PlanningTiles.IsTransitionCell(x, y);
+                bool painted = planningColors.TryGetValue(cell, out Color tint) && showPlanning;
+                if (transition || painted) visiblePlanning.Add((cell, transition, painted, tint));
             }
-            if (transition)
+            planningViewport = viewport;
+            planningViewportValid = true;
+        }
+        Color old = GUI.color;
+        // Empty cells are checked only when the visible cell range or annotations
+        // change. Repaints draw the cached nonempty subset in the original order.
+        foreach (var entry in visiblePlanning)
+        {
+            Vector2Int cell = entry.Cell;
+            Vector2 point = WorldToPreview(center, cell.x, cell.y);
+            Rect square = new(point.x - zoom / 2, point.y - zoom / 2, zoom, zoom);
+            if (entry.Painted)
+            {
+                Color tint = entry.Color; tint.a = 0.38f;
+                GUI.color = tint;
+                DrawPreviewTexture(square, Texture2D.whiteTexture);
+            }
+            if (entry.Transition)
             {
                 GUI.color = new Color(0.08f, 0.4f, 1f, cellIndex.ContainsKey(cell) ? 0.5f : 0.28f);
-                GUI.DrawTexture(square, Texture2D.whiteTexture);
+                DrawPreviewTexture(square, Texture2D.whiteTexture);
                 GUI.color = new Color(0.2f, 0.65f, 1f, 0.95f);
                 const float edge = 1.5f;
-                GUI.DrawTexture(new Rect(square.x, square.y, square.width, edge), Texture2D.whiteTexture);
-                GUI.DrawTexture(new Rect(square.x, square.yMax - edge, square.width, edge), Texture2D.whiteTexture);
-                GUI.DrawTexture(new Rect(square.x, square.y, edge, square.height), Texture2D.whiteTexture);
-                GUI.DrawTexture(new Rect(square.xMax - edge, square.y, edge, square.height), Texture2D.whiteTexture);
+                DrawPreviewTexture(new Rect(square.x, square.y, square.width, edge), Texture2D.whiteTexture);
+                DrawPreviewTexture(new Rect(square.x, square.yMax - edge, square.width, edge), Texture2D.whiteTexture);
+                DrawPreviewTexture(new Rect(square.x, square.y, edge, square.height), Texture2D.whiteTexture);
+                DrawPreviewTexture(new Rect(square.xMax - edge, square.y, edge, square.height), Texture2D.whiteTexture);
             }
         }
         GUI.color = old;

@@ -25,6 +25,11 @@ internal sealed partial class StructureEditorUI :
     private const float DesignHeight = 1080f;
     private static StructureEditorUI? instance;
     private readonly List<string> files = new();
+    private readonly List<string> fileLabels = new();
+    private static readonly string[] QuickPlaceCategories = { "Terrain", "Structural", "Furniture", "Nature", "Utility" };
+    private string? measuredSignText;
+    private GUISkin? measuredSignSkin;
+    private float measuredSignHeight;
     private readonly HashSet<string> checkedFiles =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<SpritePreview>> spritePreviews =
@@ -70,8 +75,7 @@ internal sealed partial class StructureEditorUI :
     private float zoom = 22f;
     private bool renderOrderDirty = true;
     private StructureFile? renderOrderStructure;
-    private int[] floorRenderOrder = Array.Empty<int>();
-    private int[] objectRenderOrder = Array.Empty<int>();
+    private readonly List<PreviewDrawCommand> previewDrawCommands = new();
 
     private sealed class SpritePreview
     {
@@ -84,7 +88,23 @@ internal sealed partial class StructureEditorUI :
         public bool flipY;
         public int sortingLayer;
         public int sortingOrder;
+        public int renderQueue;
+        public float localZ;
+        public bool ySorted;
+        public float sorterY;
+        public int sorterOffset;
+        public string turnableName = "";
+        public bool variantTarget;
         public Color color = Color.white;
+    }
+
+    private sealed class PreviewDrawCommand
+    {
+        public PreparedSprite visual = null!;
+        public SpritePreview part = null!;
+        public Sprite sprite = null!;
+        public float x, y;
+        public PreviewSortKey key;
     }
 
     internal static void Open(
@@ -115,24 +135,29 @@ internal sealed partial class StructureEditorUI :
         spritePreviews.Clear();
         spriteVariants.Clear();
         spriteLocalBounds.Clear();
+        ClearRenderCaches();
+        ClearItemEditor();
+        conflictStructure = null;
         cachedCells.Clear();
         cellIndex.Clear();
         planningIndex.Clear();
         planningColors.Clear();
+        ClearZoneColors();
         StopPlanningBrush();
         StopZoneBrush();
         ClearSharedMetadata();
         structure = null;
         dirty = false;
         historyDirty = false;
-        history.Reset("");
-        savedSnapshot = "";
+        history.Reset(null);
+        savedSnapshot = null;
         pendingOverwritePath = null;
         InvalidateRenderOrder();
         selectedObject = -1;
         selectedTerrain = -1;
         brushPrefabName = "";
         lastBrushCell = null;
+        ignorePlacementRules = false;
         gameObject.SetActive(false);
         ReleaseSession();
     }
@@ -145,9 +170,13 @@ internal sealed partial class StructureEditorUI :
         spritePreviews.Clear();
         spriteVariants.Clear();
         spriteLocalBounds.Clear();
+        ClearRenderCaches();
         StopPlanningBrush();
         StopZoneBrush();
+        ClearItemEditor();
+        ClearZoneColors();
         ClearSharedMetadata();
+        ignorePlacementRules = false;
         gameObject.SetActive(false);
     }
 
@@ -155,6 +184,9 @@ internal sealed partial class StructureEditorUI :
     {
         if (!open)
             return;
+        editorFieldSequence = 0;
+        // Finish a text-edit group before another control/selection is used.
+        if (Event.current.type == EventType.MouseDown) FlushHistory();
         if (Event.current.type == EventType.MouseUp)
         {
             brushStroke = false;
@@ -175,6 +207,7 @@ internal sealed partial class StructureEditorUI :
         using Silverpine.ModdingTools.ModGuiScope guiScope =
             Silverpine.ModdingTools.ModGui.BeginScaled(
                 DesignWidth, DesignHeight);
+        BeginEditorTextInput();
 
         Color oldBackdropColor = GUI.color;
         GUI.color = new Color(0.025f, 0.035f, 0.045f, 0.97f);
@@ -211,7 +244,7 @@ internal sealed partial class StructureEditorUI :
         if (!string.IsNullOrWhiteSpace(status))
             GUILayout.Label(status);
         GUILayout.EndArea();
-        FlushHistory();
+        FlushHistory(force: false);
     }
 
     private void DrawFilePanel()
@@ -227,13 +260,16 @@ internal sealed partial class StructureEditorUI :
                 $"Combine Checked ({checkedFiles.Count})"))
             CombineCheckedFiles();
         GUI.enabled = true;
-        fileScroll = GUILayout.BeginScrollView(fileScroll);
-        foreach (string path in files)
+        Rect viewport = GUILayoutUtility.GetRect(1f, 1f, GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
+        const float rowHeight = 28f;
+        Rect content = new(0, 0, Mathf.Max(1f, viewport.width - 20), files.Count * rowHeight);
+        fileScroll = GUI.BeginScrollView(viewport, fileScroll, content, false, true);
+        var rows = StructureAlgorithms.VisibleRows(fileScroll.y, viewport.height, rowHeight, files.Count);
+        for (int i = rows.First; i < rows.Last; i++)
         {
-            GUILayout.BeginHorizontal();
+            string path = files[i];
             bool wasChecked = checkedFiles.Contains(path);
-            bool isChecked = GUILayout.Toggle(
-                wasChecked, "", GUILayout.Width(22));
+            bool isChecked = GUI.Toggle(new Rect(0, i * rowHeight, 22, rowHeight - 2), wasChecked, "");
             if (isChecked != wasChecked)
             {
                 if (isChecked)
@@ -241,14 +277,13 @@ internal sealed partial class StructureEditorUI :
                 else
                     checkedFiles.Remove(path);
             }
-            if (GUILayout.Button(Path.GetFileNameWithoutExtension(path)))
+            if (GUI.Button(new Rect(24, i * rowHeight, Mathf.Max(1f, content.width - 24), rowHeight - 2), fileLabels[i]))
                 Load(path);
-            GUILayout.EndHorizontal();
         }
-        GUILayout.EndScrollView();
+        GUI.EndScrollView(true);
         GUILayout.Space(8);
         GUILayout.Label("Save As name");
-        saveAsName = GUILayout.TextField(saveAsName);
+        saveAsName = EditorTextField(saveAsName, "StructureHandler.saveAs");
         GUI.enabled = structure != null &&
                       !string.IsNullOrWhiteSpace(currentPath);
         GUILayout.BeginHorizontal();
@@ -286,6 +321,7 @@ internal sealed partial class StructureEditorUI :
             lastBrushCell = null;
             if (deleteBrush)
             {
+                itemBrush = false;
                 StopPlanningBrush();
                 StopZoneBrush();
                 brushPrefabName = "";
@@ -299,6 +335,7 @@ internal sealed partial class StructureEditorUI :
             GUILayout.Width(90));
         GUILayout.EndHorizontal();
 
+        DrawPlacementRulesToggle();
         Rect preview = GUILayoutUtility.GetRect(
             300, 10000, 300, 10000, GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
         GUI.Box(preview, "");
@@ -315,11 +352,7 @@ internal sealed partial class StructureEditorUI :
             if (Event.current.type == EventType.Repaint)
             {
                 EnsureEditorGeometry();
-                DrawGrid(clippedPreview, clippedCenter);
-                DrawRecords(clippedPreview, clippedCenter);
-                DrawPlanningOverlay(clippedPreview, clippedCenter);
-                DrawWorldTileOutlines(clippedPreview, clippedCenter);
-                DrawTopLeftMarker(clippedCenter);
+                DrawCachedPreview(clippedPreview, clippedCenter);
             }
             GUI.EndGroup();
             HandlePreviewInput(preview, center);
@@ -337,6 +370,8 @@ internal sealed partial class StructureEditorUI :
             EnsureEditorGeometry();
             GUILayout.Label("Blue outline/fill: normal world-transition cells. " +
                 (transitionOverlapCount > 0 ? $"Warning: {transitionOverlapCount} overlapped by this structure." : "No structure overlap."));
+            string? conflict = PlacementConflict();
+            if (conflict != null) GUILayout.Label("Placement conflict: " + conflict);
         }
         GUILayout.EndVertical();
     }
@@ -355,11 +390,11 @@ internal sealed partial class StructureEditorUI :
         Color old = GUI.color;
         GUI.color = new Color(1f, 1f, 1f, 0.12f);
         for (float x = firstX; x < rect.width; x += zoom)
-            GUI.DrawTexture(
+            DrawPreviewTexture(
                 new Rect(rect.x + x, rect.y, 1f, rect.height),
                 Texture2D.whiteTexture);
         for (float y = firstY; y < rect.height; y += zoom)
-            GUI.DrawTexture(
+            DrawPreviewTexture(
                 new Rect(rect.x, rect.y + y, rect.width, 1f),
                 Texture2D.whiteTexture);
         GUI.color = old;
@@ -391,7 +426,7 @@ internal sealed partial class StructureEditorUI :
                 center, boundaryX, origin.y).x;
             if (screenX >= rect.xMin && screenX <= rect.xMax)
             {
-                GUI.DrawTexture(
+                DrawPreviewTexture(
                     new Rect(screenX - 2f, rect.yMin, 5f, rect.height),
                     Texture2D.whiteTexture);
             }
@@ -404,7 +439,7 @@ internal sealed partial class StructureEditorUI :
                 center, origin.x, boundaryY).y;
             if (screenY >= rect.yMin && screenY <= rect.yMax)
             {
-                GUI.DrawTexture(
+                DrawPreviewTexture(
                     new Rect(rect.xMin, screenY - 2f, rect.width, 5f),
                     Texture2D.whiteTexture);
             }
@@ -414,43 +449,25 @@ internal sealed partial class StructureEditorUI :
 
     private void DrawRecords(Rect preview, Vector2 center)
     {
-        for (int i = 0; i < structure!.supportingTerrain.Count; i++)
-        {
-            SupportingTerrain terrain = structure.supportingTerrain[i];
-            if (!IsWaterRecord(terrain.prefabName))
-                DrawSupportingTerrain(
-                    preview, center, terrain, i == selectedTerrain);
-        }
-
         EnsureRenderOrder();
-        foreach (int i in floorRenderOrder)
+        EnsureVisiblePreview(preview, center);
+        foreach (int index in visibleDraws)
         {
-            StructureObject item = structure.objects[i];
-            DrawObject(preview, center, item,
-                i == selectedObject
-                    ? new Color(1f, 0.75f, 0.1f, 0.95f)
-                    : new Color(
-                        0.25f, 0.9f, 0.35f,
-                        showFootprintOverlay ? 0.8f : 0f));
+            var command = previewDrawCommands[index];
+            DrawPrefabSprite(preview, WorldToPreview(center, command.x, command.y),
+                command.visual);
         }
-
-        // Bathhouse and other supporting water visually sit on top of the
-        // underlying floor, but remain beneath walls and placed furnishings.
-        for (int i = 0; i < structure.supportingTerrain.Count; i++)
+        DrawZoneColors(preview, center);
+        // Editor markers are overlays, not part of the game's sprite ordering.
+        if (selectedTerrain >= 0 && selectedTerrain < structure!.supportingTerrain.Count)
         {
-            SupportingTerrain terrain = structure.supportingTerrain[i];
-            if (!IsWaterRecord(terrain.prefabName))
-                continue;
-            DrawSupportingTerrain(
-                preview,
-                center,
-                terrain,
-                i == selectedTerrain);
+            var terrain = structure.supportingTerrain[selectedTerrain];
+            DrawTile(preview, center, terrain.x, terrain.y, new Color(1f, 0.75f, 0.1f, 0.55f));
         }
-
-        foreach (int i in objectRenderOrder)
+        foreach (int i in visibleMarkers)
         {
-            StructureObject item = structure.objects[i];
+            StructureObject item = structure!.objects[i];
+            if (!showFootprintOverlay && i != selectedObject && GetSpritePreviews(item.prefabName).Count > 0) continue;
             DrawObject(preview, center, item,
                 i == selectedObject
                     ? new Color(1f, 0.75f, 0.1f, 0.95f)
@@ -467,7 +484,7 @@ internal sealed partial class StructureEditorUI :
         Vector2 marker = WorldToPreview(center, topLeft.x, topLeft.y);
         Color old = GUI.color;
         GUI.color = Color.red;
-        GUI.DrawTexture(
+        DrawPreviewTexture(
             new Rect(marker.x - 5f, marker.y - 5f, 10f, 10f),
             Texture2D.whiteTexture);
         GUI.color = old;
@@ -479,37 +496,50 @@ internal sealed partial class StructureEditorUI :
             ReferenceEquals(renderOrderStructure, structure))
             return;
 
-        floorRenderOrder = Enumerable.Range(0, structure!.objects.Count)
-            .Where(index => IsFloorRecord(structure.objects[index]))
-            .OrderByDescending(index => structure.objects[index].y)
-            .ToArray();
-        objectRenderOrder = Enumerable.Range(0, structure.objects.Count)
-            .Where(index => !IsFloorRecord(structure.objects[index]))
-            .OrderByDescending(index => structure.objects[index].y)
-            .ToArray();
+        previewSurfaceValid = false;
+        previewDrawCommands.Clear();
+        foreach (var terrain in structure!.supportingTerrain)
+            AddPreviewCommands(terrain.prefabName, terrain.x, terrain.y, terrain.z,
+                terrain.spriteVariantIndex, -1);
+        foreach (var item in structure.objects)
+            if (!AddItemPreviewCommands(item))
+                AddPreviewCommands(item.prefabName, item.x, item.y, item.z,
+                    item.spriteVariantIndex, item.turnableIndex);
+        previewDrawCommands.Sort((left, right) => left.key.CompareTo(right.key));
+        RebuildPreviewIndex();
         renderOrderStructure = structure;
         renderOrderDirty = false;
     }
 
-    private void DrawSupportingTerrain(
-        Rect preview,
-        Vector2 center,
-        SupportingTerrain terrain,
-        bool selected)
+    private void AddPreviewCommands(string prefabName, float x, float y, float z,
+        int variant, int rotation)
     {
-        Vector2 point = WorldToPreview(center, terrain.x, terrain.y);
-        if (!IsPrefabVisible(preview, point, terrain.prefabName))
-            return;
-        DrawPrefabSprite(
-            preview,
-            point,
-            terrain.prefabName,
-            new Color(1f, 1f, 1f, 0.9f),
-            terrainSpriteVariant: terrain.spriteVariantIndex);
-        DrawTile(preview, center, terrain.x, terrain.y,
-            selected
-                ? new Color(1f, 0.75f, 0.1f, 0.55f)
-                : new Color(1f, 1f, 1f, 0f));
+        Sprite[] variants = variant < 0 ? Array.Empty<Sprite>() : GetSpriteVariants(prefabName);
+        foreach (var part in GetSpritePreviews(prefabName))
+        {
+            Sprite sprite = part.sprite;
+            int normalizedRotation = rotation;
+            if (rotation >= 0 && part.turnableSprites.Length > 0)
+            {
+                normalizedRotation = (rotation % part.turnableSprites.Length + part.turnableSprites.Length) % part.turnableSprites.Length;
+                sprite = part.turnableSprites[normalizedRotation];
+            }
+            else if (rotation < 0 && variant >= 0 && variants.Length > 0 && part.variantTarget)
+            {
+                sprite = variants[(variant % variants.Length + variants.Length) % variants.Length];
+            }
+            if (sprite == null || PreviewLightingPolicy.IsFakeAO(sprite.name)) continue;
+            int order = part.ySorted
+                ? PreviewSortKey.YOrder(y + part.sorterY, part.sorterOffset,
+                    PreviewSortKey.RotationOffset(part.turnableName, normalizedRotation))
+                : part.sortingOrder;
+            previewDrawCommands.Add(new PreviewDrawCommand
+            {
+                part = part, sprite = sprite, x = x, y = y,
+                key = new PreviewSortKey(part.sortingLayer, order, part.renderQueue,
+                    z + part.localZ, previewDrawCommands.Count)
+            });
+        }
     }
 
     private void DrawObject(
@@ -519,8 +549,6 @@ internal sealed partial class StructureEditorUI :
         if (!IsPrefabVisible(preview, point, item.prefabName))
             return;
         List<SpritePreview> previews = GetSpritePreviews(item.prefabName);
-        DrawPrefabSprite(
-            preview, point, item.prefabName, Color.white, item);
 
         // A full one-world-unit square matches prefab_tile_rock and makes the
         // serialized coordinate footprint unambiguous.
@@ -543,7 +571,7 @@ internal sealed partial class StructureEditorUI :
                 zoom,
                 zoom);
             if (preview.Overlaps(marker))
-                GUI.DrawTexture(marker, Texture2D.whiteTexture);
+                DrawPreviewTexture(marker, Texture2D.whiteTexture);
         }
         GUI.color = old;
     }
@@ -563,96 +591,41 @@ internal sealed partial class StructureEditorUI :
     private void DrawPrefabSprite(
         Rect preview,
         Vector2 point,
-        string prefabName,
-        Color tint,
-        StructureObject? record = null,
-        int terrainSpriteVariant = -1)
+        PreparedSprite visual)
     {
-        int requestedVariant =
-            record?.spriteVariantIndex ?? terrainSpriteVariant;
-        Sprite[] variants = requestedVariant < 0
-            ? Array.Empty<Sprite>()
-            : GetSpriteVariants(prefabName);
-        bool variantApplied = false;
-        foreach (SpritePreview spritePreview in GetSpritePreviews(prefabName))
+        Vector2 spriteCenter = point + new Vector2(
+            visual.offset.x * zoom, -visual.offset.y * zoom);
+
+        // Rotate the actual quad, not just its bounding rectangle. Preserve
+        // prefab pivots, scale and mirrored child transforms.
+        float width = visual.drawSize.x * zoom;
+        float height = visual.drawSize.y * zoom;
+        Rect drawRect = new(spriteCenter.x - width * 0.5f,
+            spriteCenter.y - height * 0.5f, width, height);
+        if (capturingPreview)
         {
-            Sprite sprite = spritePreview.sprite;
-            if ((record == null || record.turnableIndex < 0) &&
-                requestedVariant >= 0 &&
-                variants.Length > 0 &&
-                !variantApplied)
-            {
-                int index = (requestedVariant % variants.Length +
-                             variants.Length) % variants.Length;
-                sprite = variants[index];
-                variantApplied = true;
-            }
-            else if (record != null &&
-                record.turnableIndex >= 0 &&
-                spritePreview.turnableSprites.Length > 0)
-            {
-                int index = (record.turnableIndex %
-                             spritePreview.turnableSprites.Length +
-                             spritePreview.turnableSprites.Length) %
-                            spritePreview.turnableSprites.Length;
-                sprite = spritePreview.turnableSprites[index];
-            }
-
-            Bounds bounds = sprite.bounds;
-            Vector2 localOffset =
-                spritePreview.localOrigin +
-                spritePreview.localAxisX * bounds.center.x +
-                spritePreview.localAxisY * bounds.center.y;
-            Vector2 worldSize = new(
-                Mathf.Abs(spritePreview.localAxisX.x * bounds.size.x) +
-                Mathf.Abs(spritePreview.localAxisY.x * bounds.size.y),
-                Mathf.Abs(spritePreview.localAxisX.y * bounds.size.x) +
-                Mathf.Abs(spritePreview.localAxisY.y * bounds.size.y));
-            Vector2 spriteCenter = point + new Vector2(
-                localOffset.x * zoom,
-                -localOffset.y * zoom);
-            Rect spriteRect = new(
-                spriteCenter.x - worldSize.x * zoom * 0.5f,
-                spriteCenter.y - worldSize.y * zoom * 0.5f,
-                worldSize.x * zoom,
-                worldSize.y * zoom);
-            if (!preview.Overlaps(spriteRect))
-                continue;
-
-            Rect source = sprite.textureRect;
-            Rect uv = new(
-                source.x / sprite.texture.width,
-                source.y / sprite.texture.height,
-                source.width / sprite.texture.width,
-                source.height / sprite.texture.height);
-            if (spritePreview.flipX)
-            {
-                uv.x += uv.width;
-                uv.width = -uv.width;
-            }
-            if (spritePreview.flipY)
-            {
-                uv.y += uv.height;
-                uv.height = -uv.height;
-            }
-            Color old = GUI.color;
-            GUI.color = new Color(
-                tint.r * spritePreview.color.r,
-                tint.g * spritePreview.color.g,
-                tint.b * spritePreview.color.b,
-                tint.a * spritePreview.color.a);
-            GUI.DrawTextureWithTexCoords(
-                spriteRect, sprite.texture, uv, alphaBlend: true);
-            GUI.color = old;
+            DrawPreviewQuad(drawRect, visual.texture, visual.uv, visual.color, visual.angle);
+            return;
         }
+        Color old = GUI.color;
+        // Most tiles are axis-aligned: don't cross the Unity GUI matrix API
+        // twice per sprite just to restore an unchanged matrix.
+        if (Mathf.Abs(visual.angle) <= 0.001f)
+        {
+            GUI.color = visual.color;
+            GUI.DrawTextureWithTexCoords(drawRect, visual.texture, visual.uv, alphaBlend: true);
+            GUI.color = old;
+            return;
+        }
+        Matrix4x4 oldMatrix = GUI.matrix;
+        try
+        {
+            GUI.color = visual.color;
+            GUIUtility.RotateAroundPivot(visual.angle, spriteCenter);
+            GUI.DrawTextureWithTexCoords(drawRect, visual.texture, visual.uv, alphaBlend: true);
+        }
+        finally { GUI.matrix = oldMatrix; GUI.color = old; }
     }
-
-    private static bool IsFloorRecord(StructureObject item) =>
-        item.prefabName.StartsWith(
-            "prefab_tile_", StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsWaterRecord(string prefabName) =>
-        prefabName.Contains("water", StringComparison.OrdinalIgnoreCase);
 
     private List<SpritePreview> GetSpritePreviews(string prefabName)
     {
@@ -670,50 +643,29 @@ internal sealed partial class StructureEditorUI :
 
             Turnable turnable =
                 prefab.GetComponentInChildren<Turnable>(true);
+            YSorter[] sorters = prefab.GetComponentsInChildren<YSorter>(true);
+            SpriteRenderer variantTarget = prefab.GetComponentsInChildren<SpriteRenderer>(true)
+                .FirstOrDefault(candidate => candidate.enabled && candidate.sprite != null);
             List<SpriteRenderer> renderers =
                 prefab.GetComponentsInChildren<SpriteRenderer>(false)
                     .Where(candidate =>
                         candidate.sprite != null &&
                         candidate.enabled &&
-                        !IsPreviewLightingEffect(candidate))
+                        !IsPreviewLightingEffect(candidate, prefab.transform))
                     .ToList();
-
-            // Plain constructed walls can contain extra child renderers used by
-            // the game's world lighting/shadow setup. Drawing those children as
-            // ordinary GUI sprites makes adjacent previews overlap into a
-            // light/dark checkerboard. Doors, windows, furniture, baths, and
-            // other multi-part prefabs retain all visual renderers.
-            if (IsPlainWallPreview(prefabName) && renderers.Count > 1)
-            {
-                List<SpriteRenderer> rootRenderers = renderers
-                    .Where(renderer => renderer.transform == prefab.transform)
-                    .ToList();
-                renderers = rootRenderers.Count > 0
-                    ? rootRenderers
-                    : renderers
-                        .Where(renderer =>
-                            GetPreviewHierarchyDepth(
-                                renderer.transform, prefab.transform) ==
-                            renderers.Min(candidate =>
-                                GetPreviewHierarchyDepth(
-                                    candidate.transform, prefab.transform)))
-                        .ToList();
-            }
 
             foreach (SpriteRenderer renderer in renderers)
             {
-                Vector3 relativeOrigin = prefab.transform.InverseTransformPoint(
-                    renderer.transform.TransformPoint(Vector3.zero));
-                Vector3 relativeX = prefab.transform.InverseTransformVector(
-                    renderer.transform.TransformVector(
-                        Vector3.right));
-                Vector3 relativeY = prefab.transform.InverseTransformVector(
-                    renderer.transform.TransformVector(
-                        Vector3.up));
+                // Imports retain the prefab root's rotation and scale.
+                Vector3 relativeOrigin = renderer.transform.position - prefab.transform.position;
+                Vector3 relativeX = renderer.transform.TransformVector(Vector3.right);
+                Vector3 relativeY = renderer.transform.TransformVector(Vector3.up);
                 bool usesTurnableSprites =
                     turnable != null &&
                     turnable.sprites != null &&
-                    turnable.sprites.Contains(renderer.sprite);
+                    turnable.gameObject.GetSpriteRendererExtended() == renderer;
+                YSorter sorter = sorters.FirstOrDefault(candidate =>
+                    candidate.gameObject.GetSpriteRendererExtended() == renderer);
                 previews.Add(new SpritePreview
                 {
                     sprite = renderer.sprite,
@@ -726,8 +678,15 @@ internal sealed partial class StructureEditorUI :
                         : Array.Empty<Sprite>(),
                     flipX = renderer.flipX,
                     flipY = renderer.flipY,
-                    sortingLayer = renderer.sortingLayerID,
+                    sortingLayer = SortingLayer.GetLayerValueFromID(renderer.sortingLayerID),
                     sortingOrder = renderer.sortingOrder,
+                    renderQueue = renderer.sharedMaterial != null ? renderer.sharedMaterial.renderQueue : 3000,
+                    localZ = relativeOrigin.z,
+                    ySorted = sorter != null,
+                    sorterY = sorter != null ? sorter.transform.position.y - prefab.transform.position.y : 0f,
+                    sorterOffset = sorter != null ? sorter.offset : 0,
+                    turnableName = usesTurnableSprites ? turnable!.name : "",
+                    variantTarget = renderer == variantTarget,
                     color = renderer.color
                 });
             }
@@ -771,8 +730,8 @@ internal sealed partial class StructureEditorUI :
                 Bounds bounds = sprite.bounds;
                 Vector2 localOffset =
                     preview.localOrigin +
-                    preview.localAxisX * bounds.center.x +
-                    preview.localAxisY * bounds.center.y;
+                    preview.localAxisX * (preview.flipX ? -bounds.center.x : bounds.center.x) +
+                    preview.localAxisY * (preview.flipY ? -bounds.center.y : bounds.center.y);
                 Vector2 size = new(
                     Mathf.Abs(preview.localAxisX.x * bounds.size.x) +
                     Mathf.Abs(preview.localAxisY.x * bounds.size.y),
@@ -805,33 +764,63 @@ internal sealed partial class StructureEditorUI :
         return result;
     }
 
-    private void MarkStructureDirty(bool geometryChanged = true)
+    private void MarkStructureDirty(bool geometryChanged = true, bool renderChanged = false,
+        bool zonesChanged = true, object? changedRecord = null)
     {
         dirty = true;
         historyDirty = true;
+        historyDeadline = Event.current != null && Event.current.rawType == EventType.KeyDown
+            ? Time.realtimeSinceStartup + 0.35f : 0f;
         editRevision++;
-        if (geometryChanged) InvalidateRenderOrder();
+        if (zonesChanged) zoneRevision++;
+        if (geometryChanged)
+        {
+            geometryDirty = true;
+            cachedCells.Clear();
+            placementRevision++;
+            if (changedRecord == null) placementIndexDirty = true;
+            else if (!placementIndexDirty) IndexPlacementRecord(changedRecord);
+        }
+        if (geometryChanged || renderChanged) InvalidateVisuals();
     }
 
     private void InvalidateRenderOrder()
     {
-        renderOrderDirty = true;
-        renderOrderStructure = null;
+        InvalidateVisuals();
+        placementIndexDirty = true;
+        placementRevision++;
+        zoneRevision++;
         geometryDirty = true;
         cachedCells.Clear();
     }
 
-    private static bool IsPreviewLightingEffect(SpriteRenderer renderer)
+    private void InvalidateVisuals()
     {
-        string objectName = renderer.gameObject.name;
-        string materialName = renderer.sharedMaterial?.name ?? "";
-        string shaderName = renderer.sharedMaterial?.shader?.name ?? "";
-        return objectName.ContainsAnyIgnoreCase(
-                   "light", "glow", "shadow", "ambient", "occlusion") ||
-               materialName.ContainsAnyIgnoreCase(
-                   "light", "glow", "shadow", "ambient", "occlusion") ||
-               shaderName.ContainsAnyIgnoreCase(
-                   "light", "glow", "shadow", "ambient", "occlusion");
+        previewVisualRevision++;
+        previewSurfaceValid = false;
+        renderOrderDirty = true;
+        renderOrderStructure = null;
+        visiblePreviewValid = false;
+    }
+
+    private static bool IsPreviewLightingEffect(
+        SpriteRenderer renderer, Transform prefabRoot)
+    {
+        if (PreviewLightingPolicy.IsLightingEffect(
+                renderer.gameObject.name, renderer.sprite?.name,
+                renderer.sharedMaterial?.name,
+                renderer.sharedMaterial?.shader?.name))
+            return true;
+
+        // Some prefabs put an otherwise generically named renderer underneath
+        // a FakeAO container. Inspect that branch only, never the world scene.
+        for (Transform current = renderer.transform; current != null;
+             current = current.parent)
+        {
+            if (PreviewLightingPolicy.IsFakeAO(current.name)) return true;
+            if (current == prefabRoot) break;
+        }
+        return false;
     }
 
     internal Sprite[] GetSpriteVariants(string prefabName)
@@ -893,24 +882,6 @@ internal sealed partial class StructureEditorUI :
         return variants;
     }
 
-    private static bool IsPlainWallPreview(string prefabName) =>
-        prefabName.StartsWith(
-            "prefab_wall_", StringComparison.OrdinalIgnoreCase) &&
-        !prefabName.ContainsAnyIgnoreCase("door", "window");
-
-    private static int GetPreviewHierarchyDepth(
-        Transform transform, Transform prefabRoot)
-    {
-        int depth = 0;
-        while (transform != null && transform != prefabRoot)
-        {
-            depth++;
-            transform = transform.parent;
-        }
-
-        return depth;
-    }
-
     private void DrawTile(
         Rect preview, Vector2 center, float worldX, float worldY, Color color)
     {
@@ -922,13 +893,16 @@ internal sealed partial class StructureEditorUI :
             return;
         Color old = GUI.color;
         GUI.color = color;
-        GUI.DrawTexture(tile, Texture2D.whiteTexture);
+        DrawPreviewTexture(tile, Texture2D.whiteTexture);
         GUI.color = old;
     }
 
     private void HandlePreviewInput(Rect preview, Vector2 center)
     {
         Event current = Event.current;
+        // A text field/scrollbar owns a drag even if the pointer leaves its
+        // rectangle and crosses the preview. Never turn that into paint/pan.
+        if (GUIUtility.hotControl != 0) return;
         if (pendingDiscardAction != null || !preview.Contains(current.mousePosition))
         {
             lastPlanningCell = null;
@@ -955,6 +929,7 @@ internal sealed partial class StructureEditorUI :
             return;
         }
 
+        if (HandleItemInput(center)) return;
         if (HandleZoneInput(center)) return;
         if (HandlePlanningInput(center)) return;
 
@@ -1011,7 +986,7 @@ internal sealed partial class StructureEditorUI :
                 if (!lastBrushCell.HasValue || lastBrushCell.Value != cell)
                 {
                     brushStroke = true;
-                    PlaceBrushObject(cell);
+                    PlaceBrushObject(cell, PreviewToWorldPoint(center, current.mousePosition));
                     lastBrushCell = cell;
                 }
                 current.Use();
@@ -1055,7 +1030,7 @@ internal sealed partial class StructureEditorUI :
                 Tuple<bool, int> next = candidates[nextIndex];
                 selectedObject = next.Item1 ? -1 : next.Item2;
                 selectedTerrain = next.Item1 ? next.Item2 : -1;
-                editorTab = next.Item1 ? 1 : 0;
+                editorTab = next.Item1 ? 1 : StructureItemData.IsItem(structure!.objects[next.Item2]) ? 4 : 0;
             }
 
             lastSelectionCell = clickedCell;
@@ -1070,14 +1045,17 @@ internal sealed partial class StructureEditorUI :
     }
 
     private Vector2Int PreviewToWorldCell(Vector2 center, Vector2 screenPoint)
+        => Vector2Int.RoundToInt(PreviewToWorldPoint(center, screenPoint));
+
+    private Vector2 PreviewToWorldPoint(Vector2 center, Vector2 screenPoint)
     {
         Vector2 origin = GetStructureCenter();
-        return new Vector2Int(
-            Mathf.RoundToInt(origin.x + (screenPoint.x - center.x) / zoom),
-            Mathf.RoundToInt(origin.y - (screenPoint.y - center.y) / zoom));
+        return new Vector2(
+            origin.x + (screenPoint.x - center.x) / zoom,
+            origin.y - (screenPoint.y - center.y) / zoom);
     }
 
-    private void PlaceBrushObject(Vector2Int cell)
+    private void PlaceBrushObject(Vector2Int cell, Vector2? freePosition = null)
     {
         if (structure == null)
             return;
@@ -1091,55 +1069,33 @@ internal sealed partial class StructureEditorUI :
                     item.prefabName.Equals(
                         brushPrefabName,
                         StringComparison.OrdinalIgnoreCase));
-            if (existingTerrain == null)
-            {
-                structure.supportingTerrain.Add(new SupportingTerrain
-                {
-                    prefabName = brushPrefabName,
-                    x = cell.x,
-                    y = cell.y,
-                    z = z,
-                    hasMapZoneName =
-                        !string.IsNullOrWhiteSpace(terrainBrushZone),
-                    mapZoneName = terrainBrushZone
-                });
-                selectedTerrain = structure.supportingTerrain.Count - 1;
-            }
-            else
-            {
-                existingTerrain.z = z;
-                existingTerrain.hasMapZoneName =
-                    !string.IsNullOrWhiteSpace(terrainBrushZone);
-                existingTerrain.mapZoneName = terrainBrushZone;
-                selectedTerrain =
-                    structure.supportingTerrain.IndexOf(existingTerrain);
-            }
-            selectedObject = -1;
-            MarkStructureDirty();
-            status =
-                $"Painted {CatalogDisplayName(brushPrefabName)} at " +
-                $"{cell.x}, {cell.y}.";
+            var terrain = existingTerrain ?? new SupportingTerrain
+                { prefabName = brushPrefabName, x = cell.x, y = cell.y };
+            terrain.z = z;
+            terrain.hasMapZoneName = !string.IsNullOrWhiteSpace(terrainBrushZone);
+            terrain.mapZoneName = terrainBrushZone;
+            PlaceEditorTerrain(terrain, true, existingTerrain != null);
             return;
         }
 
-        structure.objects.Add(new StructureObject
+        var profile = Profile(brushPrefabName);
+        float snapY = profile.Snap >= 0 ? profile.Snap / 32f : 0f;
+        Vector2 position = ignorePlacementRules && freePosition.HasValue
+            ? freePosition.Value : new Vector2(cell.x, cell.y + snapY);
+        PlaceEditorObject(new StructureObject
         {
             prefabName = brushPrefabName,
-            x = cell.x,
-            y = cell.y,
+            x = position.x,
+            y = position.y,
             z = z,
             npcInteractionRangeExtender =
                 addNpcInteractionRangeExtender,
             turnableIndex = GetDefaultTurnableIndex(brushPrefabName),
             occupiedOffsets = GetPrefabOccupiedOffsets(
                 brushPrefabName, GetDefaultTurnableIndex(brushPrefabName))
-        });
-        selectedObject = structure.objects.Count - 1;
-        selectedTerrain = -1;
-        addX = cell.x.ToString(CultureInfo.InvariantCulture);
-        addY = cell.y.ToString(CultureInfo.InvariantCulture);
-        MarkStructureDirty();
-        status = $"Placed {CatalogDisplayName(brushPrefabName)} at {cell.x}, {cell.y}.";
+        }, true);
+        addX = Format(position.x);
+        addY = Format(position.y);
     }
 
     private void DeleteAtCell(Vector2Int cell)
@@ -1147,14 +1103,11 @@ internal sealed partial class StructureEditorUI :
         if (structure == null)
             return;
 
-        EnsureEditorGeometry();
-        var targets = cellIndex.TryGetValue(cell, out var entries)
-            ? entries.Where(entry => !entry.Item1).Select(entry => structure.objects[entry.Item2]).ToHashSet()
-            : new HashSet<StructureObject>();
-        int objectsRemoved = structure.objects.RemoveAll(targets.Contains);
-        int terrainRemoved = structure.supportingTerrain.RemoveAll(item =>
-            item.x == cell.x && item.y == cell.y);
-        if (objectsRemoved + terrainRemoved == 0)
+        var cells = new HashSet<Vector2Int> { cell };
+        CollectPlacementCandidates(cells);
+        var targets = new HashSet<object>(placementCandidates.Where(record => RecordOccupies(record, cells)));
+        int removed = RemoveIndexedRecords(targets);
+        if (removed == 0)
         {
             status = $"Nothing to delete at {cell.x}, {cell.y}.";
             return;
@@ -1162,9 +1115,12 @@ internal sealed partial class StructureEditorUI :
 
         selectedObject = -1;
         selectedTerrain = -1;
+        // Index removal is already complete; do not rebuild it on every drag.
+        bool wasDirty = placementIndexDirty;
         MarkStructureDirty();
+        placementIndexDirty = wasDirty;
         status =
-            $"Deleted {objectsRemoved + terrainRemoved} record(s) at " +
+            $"Deleted {removed} record(s) at " +
             $"{cell.x}, {cell.y}.";
     }
 
@@ -1210,14 +1166,17 @@ internal sealed partial class StructureEditorUI :
         if (GUILayout.Toggle(
                 editorTab == 2, "Quick Place", GUI.skin.button))
             editorTab = 2;
-        if (GUILayout.Toggle(editorTab == 3, "Plan", GUI.skin.button))
-            editorTab = 3;
+        GUILayout.EndHorizontal();
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Toggle(editorTab == 4, "Items", GUI.skin.button)) editorTab = 4;
+        if (GUILayout.Toggle(editorTab == 3, "Plan", GUI.skin.button)) editorTab = 3;
         GUILayout.EndHorizontal();
         if (previousTab != editorTab)
         {
             StopPlanningBrush();
             StopZoneBrush();
-            if (editorTab == 3)
+            itemBrush = false;
+            if (editorTab == 3 || editorTab == 4)
             {
                 deleteBrush = false;
                 brushPrefabName = "";
@@ -1238,6 +1197,8 @@ internal sealed partial class StructureEditorUI :
             DrawTerrainTab();
         else if (editorTab == 2)
             DrawQuickPlaceTab();
+        else if (editorTab == 4)
+            DrawItemsTab();
         else
             DrawPlanningTab();
         GUILayout.EndScrollView();
@@ -1275,8 +1236,7 @@ internal sealed partial class StructureEditorUI :
 
     private void DrawQuickPlaceTab()
     {
-        string[] categories =
-            { "Terrain", "Structural", "Furniture", "Nature", "Utility" };
+        string[] categories = QuickPlaceCategories;
         GUILayout.BeginHorizontal();
         for (int index = 0; index < 3; index++)
             if (GUILayout.Toggle(
@@ -1371,29 +1331,27 @@ internal sealed partial class StructureEditorUI :
             structure!.supportingTerrain[selectedTerrain];
         GUILayout.Label("Selected supporting terrain");
         string prefab = LabeledTextField("Prefab", item.prefabName);
-        string x = LabeledTextField("X", item.x.ToString(
-            CultureInfo.InvariantCulture));
-        string y = LabeledTextField("Y", item.y.ToString(
-            CultureInfo.InvariantCulture));
-        string z = LabeledTextField("Z", Format(item.z));
+        GUILayout.Label("Coordinates: press Enter to apply");
+        string x = CoordinateTextField(item, "X", item.x.ToString(CultureInfo.InvariantCulture), true);
+        string y = CoordinateTextField(item, "Y", item.y.ToString(CultureInfo.InvariantCulture), true);
+        string z = CoordinateTextField(item, "Z", Format(item.z));
         string zone = LabeledTextField(
             "Zone", item.hasMapZoneName ? item.mapZoneName : "");
         if (prefab != item.prefabName)
         {
+            string previous = item.prefabName;
             item.prefabName = prefab;
-            MarkStructureDirty();
+            if (!PlaceEditorTerrain(item, false, true)) item.prefabName = previous;
         }
         if (int.TryParse(x, out int nextX) && nextX != item.x)
         {
-            item.x = nextX;
-            MarkStructureDirty();
+            ChangeTerrainPlacement(item, nextX, item.y);
         }
         if (int.TryParse(y, out int nextY) && nextY != item.y)
         {
-            item.y = nextY;
-            MarkStructureDirty();
+            ChangeTerrainPlacement(item, item.x, nextY);
         }
-        SetFloat(z, value => item.z = value, item.z);
+        if (z != Format(item.z)) SetFloat(z, value => item.z = value, item.z);
         string currentZone =
             item.hasMapZoneName ? item.mapZoneName : "";
         if (zone != currentZone)
@@ -1401,7 +1359,7 @@ internal sealed partial class StructureEditorUI :
             item.mapZoneName = zone;
             item.hasMapZoneName = true;
             terrainBrushZone = zone;
-            MarkStructureDirty();
+            MarkStructureDirty(geometryChanged: false);
         }
 
         Sprite[] variants = GetSpriteVariants(item.prefabName);
@@ -1416,28 +1374,28 @@ internal sealed partial class StructureEditorUI :
                     (item.spriteVariantIndex - 1 + variants.Length) %
                     variants.Length;
                 item.lockSpriteVariant = true;
-                MarkStructureDirty();
+                MarkStructureDirty(geometryChanged: false, renderChanged: true, zonesChanged: false);
             }
             if (GUILayout.Button("Next", GUILayout.Width(55)))
             {
                 item.spriteVariantIndex =
                     (item.spriteVariantIndex + 1) % variants.Length;
                 item.lockSpriteVariant = true;
-                MarkStructureDirty();
+                MarkStructureDirty(geometryChanged: false, renderChanged: true, zonesChanged: false);
             }
             GUILayout.EndHorizontal();
         }
 
         GUILayout.BeginHorizontal();
-        if (GUILayout.Button("Left")) { item.x--; MarkStructureDirty(); }
-        if (GUILayout.Button("Right")) { item.x++; MarkStructureDirty(); }
-        if (GUILayout.Button("Up")) { item.y++; MarkStructureDirty(); }
-        if (GUILayout.Button("Down")) { item.y--; MarkStructureDirty(); }
+        if (GUILayout.Button("Left")) ChangeTerrainPlacement(item, item.x - 1, item.y);
+        if (GUILayout.Button("Right")) ChangeTerrainPlacement(item, item.x + 1, item.y);
+        if (GUILayout.Button("Up")) ChangeTerrainPlacement(item, item.x, item.y + 1);
+        if (GUILayout.Button("Down")) ChangeTerrainPlacement(item, item.x, item.y - 1);
         GUILayout.EndHorizontal();
         GUILayout.BeginHorizontal();
         if (GUILayout.Button("Duplicate"))
         {
-            structure.supportingTerrain.Add(new SupportingTerrain
+            PlaceEditorTerrain(new SupportingTerrain
             {
                 prefabName = item.prefabName,
                 x = item.x + 1,
@@ -1456,9 +1414,7 @@ internal sealed partial class StructureEditorUI :
                         componentIndex = component.componentIndex,
                         dataBase64 = component.dataBase64
                     }).ToList()
-            });
-            selectedTerrain = structure.supportingTerrain.Count - 1;
-            MarkStructureDirty();
+            }, false);
         }
         if (GUILayout.Button("Delete"))
         {
@@ -1474,35 +1430,44 @@ internal sealed partial class StructureEditorUI :
     private void DrawSelectedObject()
     {
         StructureObject item = structure!.objects[selectedObject];
+        if (StructureItemData.IsItem(item))
+        {
+            DrawSelectedItem(item);
+            return;
+        }
         GUILayout.Label("Selected object");
         string prefab = LabeledTextField("Prefab", item.prefabName);
-        string x = LabeledTextField("X", Format(item.x));
-        string y = LabeledTextField("Y", Format(item.y));
-        string z = LabeledTextField("Z", Format(item.z));
+        string displayedX = Format(item.x), displayedY = Format(item.y);
+        GUILayout.Label("Coordinates: press Enter to apply");
+        string x = CoordinateTextField(item, "X", displayedX);
+        string y = CoordinateTextField(item, "Y", displayedY);
+        string z = CoordinateTextField(item, "Z", Format(item.z));
         if (prefab != item.prefabName)
         {
+            string previous = item.prefabName;
             item.prefabName = prefab;
-            MarkStructureDirty();
+            if (!CheckPlacement(item, false, item)) item.prefabName = previous;
+            else MarkStructureDirty();
         }
-        SetFloat(x, value => item.x = value, item.x);
-        SetFloat(y, value => item.y = value, item.y);
-        SetFloat(z, value => item.z = value, item.z);
+        // Display formatting is not an edit. In particular, turning native
+        // rules back on must not snap a previously free-placed object.
+        if (x != displayedX && TryFloat(x, out float nextX)) ChangeObjectPlacement(item, nextX, item.y);
+        if (y != displayedY && TryFloat(y, out float nextY)) ChangeObjectPlacement(item, item.x, nextY);
+        if (z != Format(item.z)) SetFloat(z, value => item.z = value, item.z);
 
         if (PrefabHasSign(item.prefabName) ||
             item.hasEditableSignMessage)
         {
             string currentMessage = item.hasEditableSignMessage
                 ? item.signMessage
-                : GetPrefabStringField(
-                    item.prefabName, "message", typeof(Sign),
-                    typeof(SimpleSign));
+                : EditorPrefabInfo(item.prefabName).SignMessage;
             string nextMessage =
                 ScrollableSignTextField(currentMessage);
             if (nextMessage != currentMessage)
             {
                 item.signMessage = nextMessage;
                 item.hasEditableSignMessage = true;
-                MarkStructureDirty();
+                MarkStructureDirty(geometryChanged: false, zonesChanged: false);
             }
         }
 
@@ -1519,9 +1484,11 @@ internal sealed partial class StructureEditorUI :
                 item.mapZoneName = nextZone;
                 item.hasMapZoneName = true;
                 terrainBrushZone = nextZone;
-                MarkStructureDirty();
+                MarkStructureDirty(geometryChanged: false);
             }
         }
+
+        DrawFurnitureCollision(item);
 
         bool nextRangeExtender = GUILayout.Toggle(
             item.npcInteractionRangeExtender,
@@ -1529,7 +1496,7 @@ internal sealed partial class StructureEditorUI :
         if (nextRangeExtender != item.npcInteractionRangeExtender)
         {
             item.npcInteractionRangeExtender = nextRangeExtender;
-            MarkStructureDirty();
+            MarkStructureDirty(geometryChanged: false, zonesChanged: false);
         }
 
         int rotationCount = GetTurnableSpriteCount(item.prefabName);
@@ -1540,19 +1507,13 @@ internal sealed partial class StructureEditorUI :
                 $"Furniture rotation: {item.turnableIndex + 1}/{rotationCount}");
             if (GUILayout.Button("Previous", GUILayout.Width(75)))
             {
-                item.turnableIndex =
-                    (item.turnableIndex - 1 + rotationCount) % rotationCount;
-                item.occupiedOffsets = GetPrefabOccupiedOffsets(
-                    item.prefabName, item.turnableIndex);
-                MarkStructureDirty();
+                ChangeObjectPlacement(item, item.x, item.y,
+                    (item.turnableIndex - 1 + rotationCount) % rotationCount);
             }
             if (GUILayout.Button("Next", GUILayout.Width(55)))
             {
-                item.turnableIndex =
-                    (item.turnableIndex + 1) % rotationCount;
-                item.occupiedOffsets = GetPrefabOccupiedOffsets(
-                    item.prefabName, item.turnableIndex);
-                MarkStructureDirty();
+                ChangeObjectPlacement(item, item.x, item.y,
+                    (item.turnableIndex + 1) % rotationCount);
             }
             GUILayout.EndHorizontal();
         }
@@ -1571,29 +1532,19 @@ internal sealed partial class StructureEditorUI :
                     (item.spriteVariantIndex - 1 + variants.Length) %
                     variants.Length;
                 item.lockSpriteVariant = true;
-                MarkStructureDirty();
+                MarkStructureDirty(geometryChanged: false, renderChanged: true, zonesChanged: false);
             }
             if (GUILayout.Button("Next", GUILayout.Width(55)))
             {
                 item.spriteVariantIndex =
                     (item.spriteVariantIndex + 1) % variants.Length;
                 item.lockSpriteVariant = true;
-                MarkStructureDirty();
+                MarkStructureDirty(geometryChanged: false, renderChanged: true, zonesChanged: false);
             }
             GUILayout.EndHorizontal();
         }
 
-        nudgeStep = LabeledTextField("Nudge", nudgeStep);
-        float step = TryFloat(nudgeStep, out float parsedStep) &&
-                     parsedStep > 0f
-            ? parsedStep
-            : 0.25f;
-        GUILayout.BeginHorizontal();
-        if (GUILayout.Button("Left")) { item.x -= step; MarkStructureDirty(); }
-        if (GUILayout.Button("Right")) { item.x += step; MarkStructureDirty(); }
-        if (GUILayout.Button("Up")) { item.y += step; MarkStructureDirty(); }
-        if (GUILayout.Button("Down")) { item.y -= step; MarkStructureDirty(); }
-        GUILayout.EndHorizontal();
+        DrawNudgeControls(item);
         GUILayout.BeginHorizontal();
         if (GUILayout.Button("Duplicate"))
         {
@@ -1627,9 +1578,7 @@ internal sealed partial class StructureEditorUI :
                         dataBase64 = component.dataBase64
                     }).ToList()
             };
-            structure.objects.Add(copy);
-            selectedObject = structure.objects.Count - 1;
-            MarkStructureDirty();
+            PlaceEditorObject(copy, false);
         }
         if (GUILayout.Button("Delete"))
         {
@@ -1641,21 +1590,10 @@ internal sealed partial class StructureEditorUI :
     }
 
     private static bool PrefabHasSign(string prefabName)
-    {
-        GameObject? prefab =
-            Plugin.ResolvePrefab(prefabName);
-        return prefab != null &&
-               (prefab.GetComponentInChildren<Sign>(true) != null ||
-                prefab.GetComponentInChildren<SimpleSign>(true) != null);
-    }
+        => EditorPrefabInfo(prefabName).HasSign;
 
     private static bool PrefabHasMapZone(string prefabName)
-    {
-        GameObject? prefab =
-            Plugin.ResolvePrefab(prefabName);
-        return prefab != null &&
-               prefab.GetComponentInChildren<MapZone>(true) != null;
-    }
+        => EditorPrefabInfo(prefabName).HasZone;
 
     private static string GetPrefabStringField(
         string prefabName, string fieldName, params Type[] componentTypes)
@@ -1679,11 +1617,11 @@ internal sealed partial class StructureEditorUI :
         return "";
     }
 
-    private static string LabeledTextField(string label, string value)
+    private string LabeledTextField(string label, string value)
     {
         GUILayout.BeginHorizontal();
         GUILayout.Label(label, GUILayout.Width(65));
-        value = GUILayout.TextField(value);
+        value = EditorTextField(value);
         GUILayout.EndHorizontal();
         return value;
     }
@@ -1692,10 +1630,12 @@ internal sealed partial class StructureEditorUI :
     {
         GUILayout.Label("Sign text");
         float contentWidth = 275f;
-        float contentHeight = Mathf.Max(
-            52f,
-            GUI.skin.textArea.CalcHeight(
-                new GUIContent(value ?? ""), contentWidth));
+        if (measuredSignText != value || measuredSignSkin != GUI.skin)
+        {
+            measuredSignText = value; measuredSignSkin = GUI.skin;
+            measuredSignHeight = Mathf.Max(52f, GUI.skin.textArea.CalcHeight(new GUIContent(value ?? ""), contentWidth));
+        }
+        float contentHeight = measuredSignHeight;
         signTextScroll = GUILayout.BeginScrollView(
             signTextScroll,
             alwaysShowHorizontal: false,
@@ -1714,7 +1654,8 @@ internal sealed partial class StructureEditorUI :
         if (TryFloat(text, out float value) && !Mathf.Approximately(value, oldValue))
         {
             set(value);
-            MarkStructureDirty();
+            // This control edits Z only: order changes, XY occupancy does not.
+            MarkStructureDirty(geometryChanged: false, renderChanged: true, zonesChanged: false);
         }
     }
 
@@ -1724,6 +1665,8 @@ internal sealed partial class StructureEditorUI :
         files.Clear();
         files.AddRange(Directory.GetFiles(Plugin.StructuresDirectory, "*.json")
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase));
+        fileLabels.Clear();
+        fileLabels.AddRange(files.Select(Path.GetFileNameWithoutExtension));
         checkedFiles.RemoveWhere(path => !files.Contains(
             path, StringComparer.OrdinalIgnoreCase));
         status = $"{files.Count} structure file(s) found.";
@@ -1785,12 +1728,7 @@ internal sealed partial class StructureEditorUI :
     }
 
     private static int GetTurnableSpriteCount(string prefabName)
-    {
-        Turnable? turnable =
-            Plugin.ResolvePrefab(prefabName)
-                ?.GetComponentInChildren<Turnable>(true);
-        return turnable?.sprites?.Length ?? 0;
-    }
+        => EditorPrefabInfo(prefabName).Rotations;
 
     internal static List<StructurePosition> GetPrefabOccupiedOffsets(
         string prefabName, int turnableIndex)
@@ -1945,6 +1883,7 @@ internal sealed partial class StructureEditorUI :
     private static bool IsUnsafeQuickPlaceName(string prefabName)
     {
         return string.IsNullOrWhiteSpace(prefabName) ||
+               prefabName.Equals("prefab_item", StringComparison.OrdinalIgnoreCase) ||
                prefabName.ContainsAnyIgnoreCase(
                    "player", "npc_", "enemy", "monster",
                    "projectile", "particle", "effect_", "vfx", "sfx",
@@ -1960,6 +1899,7 @@ internal sealed partial class StructureEditorUI :
         {
             StructureFile loaded =
                 ReadEditableFile(path, out int normalizedTiles);
+            ClearItemEditor();
             StopPlanningBrush();
             StopZoneBrush();
             structure = loaded;
@@ -1992,6 +1932,7 @@ internal sealed partial class StructureEditorUI :
     private void CombineCheckedFiles()
     {
         if (!AllowDiscard(CombineCheckedFiles)) return;
+        ClearItemEditor();
 
         try
         {
@@ -2130,6 +2071,7 @@ internal sealed partial class StructureEditorUI :
     private void CreateBlankStructure()
     {
         if (!AllowDiscard(CreateBlankStructure)) return;
+        ClearItemEditor();
 
         string baseName = "New Structure";
         string path = Path.Combine(
@@ -2199,7 +2141,7 @@ internal sealed partial class StructureEditorUI :
             return;
         }
 
-        structure.objects.Add(new StructureObject
+        PlaceEditorObject(new StructureObject
         {
             prefabName = addPrefabName.Trim(),
             x = x,
@@ -2211,10 +2153,7 @@ internal sealed partial class StructureEditorUI :
             occupiedOffsets = GetPrefabOccupiedOffsets(
                 addPrefabName.Trim(),
                 GetDefaultTurnableIndex(addPrefabName.Trim()))
-        });
-        selectedObject = structure.objects.Count - 1;
-        MarkStructureDirty();
-        status = "Generic object added. It will use the prefab's default state.";
+        }, true);
     }
 
     private void MoveToCoordinate()
@@ -2238,13 +2177,26 @@ internal sealed partial class StructureEditorUI :
             status = "The destination is outside the supported coordinate range.";
             return;
         }
-        if ((structure.supportingTerrain.Count > 0 || structure.planningTiles.Count > 0) &&
+        if ((structure.supportingTerrain.Count > 0 || structure.planningTiles.Count > 0 ||
+             structure.objects.Any(item => GetPlacementSlot(item.prefabName) != PlacementSlot.None)) &&
             !StructureAlgorithms.IsGridTranslation(x, y))
         {
-            status = "This structure contains grid terrain or planning cells. Use an integer tile displacement; " +
+            status = "This structure contains ground, walls or planning cells. Use an integer tile displacement; " +
                 $"nearest aligned target: {Format(reference.x + Mathf.Round(x))}, {Format(reference.y + Mathf.Round(y))}.";
             return;
         }
+        // Even an integer translation can change RoundToInt at half-cell
+        // anchors (banker's rounding). Validate the proposed document first.
+        var translated = new StructureFile
+        {
+            objects = structure.objects.Where(item => GetPlacementSlot(item.prefabName) != PlacementSlot.None)
+                .Select(item => new StructureObject { prefabName = item.prefabName,
+                    x = item.x + x, y = item.y + y, occupiedOffsets = item.occupiedOffsets }).ToList(),
+            supportingTerrain = structure.supportingTerrain.Select(item => new SupportingTerrain
+                { prefabName = item.prefabName, x = item.x + Mathf.RoundToInt(x), y = item.y + Mathf.RoundToInt(y) }).ToList()
+        };
+        string? conflict = StructurePlacementPolicy.FindConflict(translated, GetPlacementSlot);
+        if (conflict != null) { status = "Cannot move: " + conflict; return; }
         foreach (StructureObject item in structure.objects)
         {
             item.x += x;
@@ -2289,6 +2241,8 @@ internal sealed partial class StructureEditorUI :
             return;
         try
         {
+            string? conflict = PlacementConflict();
+            if (conflict != null) { status = "Cannot save: " + conflict; return; }
             structure.name = Path.GetFileNameWithoutExtension(path);
             structure.occupiedPositions = structure.objects
                 .SelectMany(GetObjectCells)
@@ -2305,8 +2259,8 @@ internal sealed partial class StructureEditorUI :
                 StringSerializationAPI.Serialize(typeof(StructureFile), structure));
             currentPath = path;
             dirty = false;
-            savedSnapshot = CaptureEditorSnapshot();
-            history.Record(savedSnapshot);
+            history.Record(structure);
+            savedSnapshot = history.Current;
             historyDirty = false;
             status = "Saved " + Path.GetFileName(path) + ".";
         }

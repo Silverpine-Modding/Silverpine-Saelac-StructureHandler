@@ -53,13 +53,4 @@ internal static class RailingPrefab
         }
     }
 
-    internal static void ActivateImportedInstance(GameObject instance)
-    {
-        if (instance.GetComponent<StructureRailingState>() == null ||
-            ReferenceEquals(registration?.Template, instance)) return;
-        // Native save loads use ModdingTools' activation hook. Direct structure
-        // imports must also activate clones of this inactive persistent template.
-        instance.hideFlags = HideFlags.None;
-        instance.SetActive(true);
-    }
 }

@@ -3,6 +3,15 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 
 void Check(bool value) { if (!value) throw new Exception("Native serialization assertion failed."); }
+WaterSettingsChecks.Run(Check);
+ItemStorageChecks.Run(Check);
+MarketChecks.Run(Check);
+var editorFile = EditorPerformanceChecks.FilledFile();
+var editorCopy = EditorDocumentCopy.Clone(editorFile);
+Check(StringSerializationAPI.Serialize(typeof(StructureFile), editorFile) == StringSerializationAPI.Serialize(typeof(StructureFile), editorCopy));
+Check(EditorDocumentCopy.Equal(editorFile, StringSerializationAPI.Deserialize(typeof(StructureFile),
+    StringSerializationAPI.Serialize(typeof(StructureFile), editorCopy))));
+Console.WriteLine("PASS Optimized editor snapshots match native JSON for every public model field.");
 var state = new StructureWorldState();
 state.protectedTiles.Add(new StructurePosition { x = -2, y = 1 });
 state.buildableTiles.Add(new StructurePosition { x = 0, y = 0 });
@@ -60,6 +69,30 @@ byte[] NativeBytes(ISerializableMonoBehavior value)
     using var stream = new MemoryStream(); using var writer = new BinaryWriter(stream);
     value.Serialize(writer); writer.Flush(); return stream.ToArray();
 }
+foreach (bool collisionEnabled in new[] { false, true })
+{
+    var furniture = new StructureObject { prefabName = "prefab_furniture_table_wood" };
+    FurnitureCollision.SetEnabled(furniture, collisionEnabled);
+    var importedCollider = NativeState<TurfCollider>();
+    importedCollider.abyss = true; // This unrelated prefab flag must stay untouched.
+    using (var reader = new BinaryReader(new MemoryStream(Convert.FromBase64String(furniture.components.Single().dataBase64))))
+        importedCollider.Deserialize(reader);
+    Check(importedCollider.passable == !collisionEnabled && importedCollider.abyss);
+    var savedBytes = NativeBytes(importedCollider);
+    Check(savedBytes.SequenceEqual(new byte[] { collisionEnabled ? (byte)0 : (byte)1 }));
+    var reloadedCollider = NativeState<TurfCollider>();
+    using (var reader = new BinaryReader(new MemoryStream(savedBytes))) reloadedCollider.Deserialize(reader);
+    Check(reloadedCollider.passable == !collisionEnabled);
+}
+Console.WriteLine("PASS Furniture collision edits import and survive real native TurfCollider save/load without changing abyss or adding sidecar state.");
+var collisionFile = new StructureFile { objects = new() { new() { prefabName = "prefab_furniture_table_wood" } } };
+FurnitureCollision.SetEnabled(collisionFile.objects[0], false);
+var collisionRoundTrip = (StructureFile)StringSerializationAPI.Deserialize(typeof(StructureFile),
+    StringSerializationAPI.Serialize(typeof(StructureFile), collisionFile));
+Check(FurnitureCollision.TryReadEnabled(collisionRoundTrip.objects[0].components, false, out var collisionState) && !collisionState);
+Check(collisionRoundTrip.objects[0].components.Single().componentIndex == 0);
+Console.WriteLine("PASS Game JSON serializer preserves native furniture collision records for export/import.");
+
 var randomSprite = NativeState<RandomSprite>();
 Field(randomSprite, "index", 1); Field(randomSprite, "initialized", true);
 var randomReloaded = NativeState<RandomSprite>();
@@ -192,3 +225,50 @@ var reloadedFurniture = NativeState<Pickupable>();
 using (var reader = new BinaryReader(new MemoryStream(furnitureBefore))) reloadedFurniture.Deserialize(reader);
 Check(reloadedFurniture.owned && PlayerBuildablePickupPatch.ResolveOwnershipBlock(reloadedFurniture.owned, false));
 Console.WriteLine("PASS Buildable pickup leaves native ownership intact through save/load and restores restrictions when disabled.");
+
+StructureItemQuality.InstallTypeResolver();
+foreach (Quality rarity in Enum.GetValues(typeof(Quality)))
+{
+    var quality = new StructureItemQuality { Quality = rarity };
+    var restored = new StructureItemQuality();
+    using (var reader = new BinaryReader(new MemoryStream(StructureItemData.Bytes(quality)))) restored.Deserialize(reader);
+    Check(restored.Quality == rarity && restored.GetMultiplier() == (int)rarity + 1);
+}
+Console.WriteLine("PASS Custom-item quality serializes every native level, Normal through Legendary.");
+
+var placedItem = new Item { name = "A Handmade Blade", description = "A fine blade.", value = 73, bulk = 2f };
+placedItem.AddItemComponent(new StructureItemQuality { Quality = Quality.Legendary });
+placedItem.AddItemComponent(new ItemComponent_Durability(42));
+placedItem.AddItemComponent(new ItemComponent_Enchantment(ItemComponent_Enchantment.EnchantmentType.Knowledge));
+var itemRecord = StructureItemData.Create(placedItem, 1.125f, -3.75f, 315);
+Check(itemRecord.z == 1 && itemRecord.x == 1.125f && itemRecord.y == -3.75f);
+Check(itemRecord.components.Count == 2 && itemRecord.components[0].type.StartsWith("WorldInventory,"));
+var worldState = StructureItemData.Storage(itemRecord.components.Single(c => c.type.StartsWith("WorldItem,")).dataBase64);
+Check(worldState.GetInt("rotation", -1) == 315 && !worldState.GetBool("owned", true));
+var inventoryState = StructureItemData.Storage(itemRecord.components[0].dataBase64);
+Check(inventoryState.GetBool("initialized", false) && inventoryState.GetBool("dirty", false));
+Check(inventoryState.GetString("summary", "") == "A Handmade Blade");
+Console.WriteLine("PASS Editor items create native WorldItem/WorldInventory records with fractional placement, ownership and rotation.");
+
+// Type.GetType in Assembly-CSharp cannot find plugin FullNames on CoreCLR;
+// a separate Unity-Mono test exercises full item deserialization/type resolution.
+var itemJson = StringSerializationAPI.Serialize(typeof(StructureFile), new StructureFile { objects = new() { itemRecord } });
+var itemJsonReloaded = (StructureFile)StringSerializationAPI.Deserialize(typeof(StructureFile), itemJson);
+Check(itemJsonReloaded.objects.Single().components.Select(c => c.dataBase64).SequenceEqual(itemRecord.components.Select(c => c.dataBase64)));
+Check(itemJsonReloaded.objects[0].x == itemRecord.x && itemJsonReloaded.objects[0].z == 1);
+StructureItemData.Update(itemRecord, "WorldItem", fields => { fields["owned"] = true; fields["futureField"] = "kept"; });
+StructureItemData.Write(itemRecord, placedItem, 405);
+worldState = StructureItemData.Storage(itemRecord.components.Single(c => c.type.StartsWith("WorldItem,")).dataBase64);
+Check(worldState.GetBool("owned", false) && worldState.GetInt("rotation", -1) == 45 && worldState.GetString("futureField", "") == "kept");
+Console.WriteLine("PASS JSON/duplicate/queued-item payloads preserve native bytes; edits retain ownership and unknown native fields.");
+
+var readItem = StructureItemData.Read(itemRecord, out int readRotation);
+Check(readRotation == 45 && readItem.GetItemComponent<StructureItemQuality>().Quality == Quality.Legendary);
+Check(readItem.GetItemComponent<ItemComponent_Durability>().Durability == 42 && readItem.value == 73);
+Console.WriteLine("PASS Strict editor decoder reads native component payloads without invoking item-use or inventory callbacks.");
+string preservedInventory = itemRecord.components[0].dataBase64;
+itemRecord.components.Single(c => c.type.StartsWith("WorldItem,")).dataBase64 = "not base64!";
+try { StructureItemData.Write(itemRecord, new Item { name = "Replacement" }, 0); throw new Exception("Expected malformed state to fail."); }
+catch (FormatException) { }
+Check(itemRecord.components[0].dataBase64 == preservedInventory);
+Console.WriteLine("PASS Invalid WorldItem metadata cannot partially overwrite the inventory component.");

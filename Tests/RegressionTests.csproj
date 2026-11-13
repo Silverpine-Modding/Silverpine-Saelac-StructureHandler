@@ -8,12 +8,18 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="NativeSerializerSmoke\**\*.cs" />
+    <Compile Remove="ItemsMono\**\*.cs" />
+    <Compile Remove="EditorInputSmoke\**\*.cs" />
     <Compile Include="..\StructureAlgorithms.cs" Link="StructureAlgorithms.cs" />
     <Compile Include="..\StructureModels.cs" Link="StructureModels.cs" />
     <Compile Include="..\StructurePlans.cs" Link="StructurePlans.cs" />
     <Compile Include="..\LegacyStructureReader.cs" Link="LegacyStructureReader.cs" />
     <Compile Include="..\ImportTransaction.cs" Link="ImportTransaction.cs" />
     <Compile Include="..\SnapshotHistory.cs" Link="SnapshotHistory.cs" />
+    <Compile Include="..\EditorDocumentHistory.cs" Link="EditorDocumentHistory.cs" />
+    <Compile Include="..\EditorSpatialIndex.cs" Link="EditorSpatialIndex.cs" />
+    <Compile Include="..\EditorWorkQueue.cs" Link="EditorWorkQueue.cs" />
+    <Compile Include="..\EditorCoordinateDraft.cs" Link="EditorCoordinateDraft.cs" />
     <Compile Include="..\StructureJsonFile.cs" Link="StructureJsonFile.cs" />
     <Compile Include="..\ImportFileSelection.cs" Link="ImportFileSelection.cs" />
     <Compile Include="..\StructureRailingState.cs" Link="StructureRailingState.cs" />
@@ -26,5 +32,13 @@
     <Compile Include="..\ImportFootprint.cs" Link="ImportFootprint.cs" />
     <Compile Include="..\DestinationGroundPolicy.cs" Link="DestinationGroundPolicy.cs" />
     <Compile Include="..\DestinationSupportPolicy.cs" Link="DestinationSupportPolicy.cs" />
+    <Compile Include="..\PreviewLightingPolicy.cs" Link="PreviewLightingPolicy.cs" />
+    <Compile Include="..\FurnitureCollision.cs" Link="FurnitureCollision.cs" />
+    <Compile Include="..\PreviewSortKey.cs" Link="PreviewSortKey.cs" />
+    <Compile Include="..\StructurePlacementPolicy.cs" Link="StructurePlacementPolicy.cs" />
+    <Compile Include="..\ItemCustomizationRules.cs" Link="ItemCustomizationRules.cs" />
+    <Compile Include="..\WaterExportPolicy.cs" Link="WaterExportPolicy.cs" />
+    <Compile Include="..\ZonePreview.cs" Link="ZonePreview.cs" />
+    <Compile Include="..\ImportedPrefabLifecycle.cs" Link="ImportedPrefabLifecycle.cs" />
   </ItemGroup>
 </Project>

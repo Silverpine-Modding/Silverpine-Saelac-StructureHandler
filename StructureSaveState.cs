@@ -31,10 +31,10 @@ internal static class StructureSaveState
         registration = ModSaveData.Register(Plugin.PluginGuid, new ModSaveDataDefinition
         {
             Id = Plugin.PluginGuid + ".world",
-            CurrentVersion = 3,
+            CurrentVersion = 4,
             // Older versions have no imported-cell history (or supplemental
             // terrain). Empty additive defaults never invent import footprints.
-            Migrate = (version, payload) => version == 1 || version == 2 ? payload :
+            Migrate = (version, payload) => version >= 1 && version <= 3 ? payload :
                 throw new InvalidDataException("Unsupported structure save version."),
             Capture = Capture,
             Restore = Restore,
@@ -45,6 +45,7 @@ internal static class StructureSaveState
     private static void Reset()
     {
         loadEpoch++;
+        MarketCrates.Reset();
         TerrainRepair.Reset();
         StructureTerrainPersistence.Reset();
         Plugin.ProtectedWorldTiles.Clear();
@@ -76,7 +77,8 @@ internal static class StructureSaveState
             appearances = Appearances.Values.ToList(),
             supplementalObjects = StructureTerrainPersistence.Ledger.Objects.Values.ToList(),
             clearedScenery = StructureTerrainPersistence.Ledger.Cleared.Values.ToList(),
-            importedCells = ImportedCells.Capture()
+            importedCells = ImportedCells.Capture(),
+            sharedMarket = MarketCrates.Capture()
         });
     }
     internal static void Restore(string json)
@@ -84,6 +86,7 @@ internal static class StructureSaveState
         var state = StringSerializationAPI.Deserialize(typeof(StructureWorldState), json)
             as StructureWorldState ?? throw new InvalidDataException("Invalid structure save data.");
         var importedCells = ImportFootprint.Read(state.importedCells);
+        MarketCrates.Restore(state.sharedMarket);
         StructureTerrainPersistence.Ledger.Restore(state.supplementalObjects, state.clearedScenery);
         ImportedCells.Restore(importedCells);
         Plugin.ProtectedWorldTiles.Clear();
@@ -106,6 +109,7 @@ internal static class StructureSaveState
 
     private static void OnLoaded()
     {
+        MarketCrates.Reconcile();
         if (!restored && ModSaveData.Warnings.Count == 0 &&
             !string.IsNullOrWhiteSpace(LegacySavePath))
         {
@@ -161,7 +165,7 @@ internal static class StructureSaveState
             StructureTerrainPersistence.RestoreLoaded(tile);
             foreach (var pending in Pending.Where(p => p.x == tile.x && p.y == tile.y).ToArray())
             {
-                StructureTransfer.ValidateImportFiles(new[] { pending.structure });
+                StructureTransfer.ValidateImportFiles(new[] { pending.structure }, enforcePlacement: true);
                 StructureTransfer.ApplyLoadedImport(pending.structure);
                 Pending.Remove(pending);
             }

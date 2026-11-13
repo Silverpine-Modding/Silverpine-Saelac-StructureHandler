@@ -24,6 +24,25 @@ internal sealed class StructureWorldState
     public List<StructureObject> supplementalObjects = new();
     public List<StructureObject> clearedScenery = new();
     public List<StructurePosition> importedCells = new();
+    public SharedMarketState? sharedMarket;
+}
+
+[Serializable]
+internal sealed class SharedMarketState
+{
+    public int lastDay = -1;
+    public int lastHour = -1;
+    public List<SharedMarketPrice> prices = new();
+}
+
+[Serializable]
+internal sealed class SharedMarketPrice
+{
+    public string itemName = "";
+    public float price;
+    public float minPrice;
+    public float maxPrice;
+    public float maxChange;
 }
 
 [Serializable]

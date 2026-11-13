@@ -8,8 +8,9 @@ namespace StructureHandler;
 
 internal sealed partial class StructureEditorUI
 {
-    private readonly SnapshotHistory history = new();
-    private string savedSnapshot = "";
+    private readonly EditorDocumentHistory history = new();
+    private StructureFile? savedSnapshot;
+    private float historyDeadline;
     private bool historyDirty;
     private bool brushStroke;
     private bool discardApproved;
@@ -33,22 +34,21 @@ internal sealed partial class StructureEditorUI
     {
         sharedVariants.Clear();
         sharedFootprints.Clear();
+        placementProfiles.Clear();
+        editorPrefabMetadata.Clear();
     }
-    private string CaptureEditorSnapshot() =>
-        structure == null ? "" : StringSerializationAPI.Serialize(typeof(StructureFile), structure);
-
     private void ResetHistory()
     {
-        string snapshot = CaptureEditorSnapshot();
-        history.Reset(snapshot);
-        savedSnapshot = dirty ? "" : snapshot;
+        history.Reset(structure);
+        savedSnapshot = dirty ? null : history.Current;
         historyDirty = false;
         brushStroke = false;
     }
-    private void FlushHistory()
+    private void FlushHistory(bool force = true)
     {
         if (!historyDirty || brushStroke || structure == null) return;
-        history.Record(CaptureEditorSnapshot());
+        if (!force && Time.realtimeSinceStartup < historyDeadline) return;
+        history.Record(structure);
         historyDirty = false;
     }
     private void Undo()
@@ -62,18 +62,20 @@ internal sealed partial class StructureEditorUI
         FlushHistory();
         RestoreEditorSnapshot(history.Redo());
     }
-    private void RestoreEditorSnapshot(string? snapshot)
+    private void RestoreEditorSnapshot(StructureFile? snapshot)
     {
         if (snapshot == null) return;
-        structure = (StructureFile)StringSerializationAPI.Deserialize(typeof(StructureFile), snapshot);
+        ClearItemEditor();
+        structure = EditorDocumentCopy.Clone(snapshot);
         structure.planningTiles = PlanningTiles.Normalize(structure.planningTiles);
         lastPlanningCell = null;
         zoneStroke.End();
         selectedObject = selectedTerrain = -1;
         movementReferenceSelection = int.MinValue;
-        dirty = snapshot != savedSnapshot;
+        dirty = !EditorDocumentCopy.Equal(snapshot, savedSnapshot);
         historyDirty = false;
         editRevision++;
+        zoneRevision++;
         InvalidateRenderOrder();
     }
     private bool AllowDiscard(Action action)
@@ -157,6 +159,7 @@ internal sealed partial class StructureEditorUI
     {
         if (!geometryDirty) return;
         geometryDirty = false;
+        planningViewportValid = false;
         cellIndex.Clear();
         cachedCells.Clear();
         planningIndex.Clear();

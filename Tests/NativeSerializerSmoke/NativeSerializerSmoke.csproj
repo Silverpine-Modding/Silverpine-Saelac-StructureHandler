@@ -8,6 +8,19 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\..\StructureModels.cs" Link="StructureModels.cs" />
+    <Compile Include="..\..\EditorDocumentHistory.cs" Link="EditorDocumentHistory.cs" />
+    <Compile Include="..\..\EditorSpatialIndex.cs" Link="EditorSpatialIndex.cs" />
+    <Compile Include="..\..\EditorWorkQueue.cs" Link="EditorWorkQueue.cs" />
+    <Compile Include="..\..\EditorCoordinateDraft.cs" Link="EditorCoordinateDraft.cs" />
+    <Compile Include="..\EditorPerformanceChecks.cs" Link="EditorPerformanceChecks.cs" />
+    <Compile Include="..\..\SharedMarketBook.cs" Link="SharedMarketBook.cs" />
+    <Compile Include="..\..\WaterExportSettings.cs" Link="WaterExportSettings.cs" />
+    <Reference Include="BepInEx">
+      <HintPath>..\..\..\..\BepInEx\core\BepInEx.dll</HintPath>
+    </Reference>
+    <Compile Include="..\..\FurnitureCollision.cs" Link="FurnitureCollision.cs" />
+    <Compile Include="..\..\ItemCustomizationRules.cs" Link="ItemCustomizationRules.cs" />
+    <Compile Include="..\..\StructureItemData.cs" Link="StructureItemData.cs" />
     <Compile Include="..\..\PlayerBuildableSleep.cs" Link="PlayerBuildableSleep.cs" />
     <Compile Include="..\..\PlayerBuildablePickup.cs" Link="PlayerBuildablePickup.cs" />
     <Reference Include="0Harmony">

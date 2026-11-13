@@ -4,7 +4,7 @@ namespace StructureHandler;
 internal static class StructurePlans
 {
     internal static Dictionary<(int X, int Y), StructureFile> Partition(StructureFile file,
-        Func<float, float, (int, int)> tileOf, Func<string, bool> includeTerrain)
+        Func<float, float, (int, int)> tileOf)
     {
         var parts = new Dictionary<(int, int), StructureFile>();
         StructureFile Part((int, int) tile)
@@ -15,9 +15,10 @@ internal static class StructurePlans
         }
         foreach (var item in file.objects)
             Part(tileOf(item.x, item.y)).objects.Add(item);
+        // Import all records in the file. Export preferences must not change
+        // the footprint or silently remove water from distant queued sections.
         foreach (var item in file.supportingTerrain)
-            if (includeTerrain(item.prefabName))
-                Part(tileOf(item.x, item.y)).supportingTerrain.Add(item);
+            Part(tileOf(item.x, item.y)).supportingTerrain.Add(item);
         return parts;
     }
 }

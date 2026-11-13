@@ -31,9 +31,6 @@ internal static class StructureFileNormalizer
                            item.prefabName.StartsWith(
                 "prefab_tile_", StringComparison.OrdinalIgnoreCase))
             .ToList();
-        var terrainKeys = new HashSet<(int, int, string)>(
-            file.supportingTerrain.Select(item =>
-                (item.x, item.y, (item.prefabName ?? "").ToLowerInvariant())));
         foreach (StructureObject item in tileObjects)
         {
             if (!StructureAlgorithms.IsFinite(item.x) || !StructureAlgorithms.IsFinite(item.y) ||
@@ -41,30 +38,27 @@ internal static class StructureFileNormalizer
                 throw new InvalidDataException($"Invalid terrain coordinates for {item.prefabName}.");
             int x = Mathf.RoundToInt(item.x);
             int y = Mathf.RoundToInt(item.y);
-            if (terrainKeys.Add((x, y, item.prefabName.ToLowerInvariant())))
+            // Preserve overlaps for the editor's conflict check. Identical
+            // prefab names can still have different zones or saved state.
+            file.supportingTerrain.Add(new SupportingTerrain
             {
-                file.supportingTerrain.Add(new SupportingTerrain
-                {
-                    prefabName = item.prefabName,
-                    x = x,
-                    y = y,
-                    z = item.z,
-                    spriteVariantIndex = item.spriteVariantIndex,
-                    lockSpriteVariant = item.lockSpriteVariant,
-                    hasMapZoneName = item.hasMapZoneName,
-                    mapZoneName = item.mapZoneName,
-                    components = (item.components ??
-                                  new List<StructureComponent>())
-                        .Select(component => new StructureComponent
-                        {
-                            type = component.type,
-                            hierarchyPath = component.hierarchyPath,
-                            componentIndex = component.componentIndex,
-                            dataBase64 = component.dataBase64
-                        })
-                        .ToList()
-                });
-            }
+                prefabName = item.prefabName,
+                x = x,
+                y = y,
+                z = item.z,
+                spriteVariantIndex = item.spriteVariantIndex,
+                lockSpriteVariant = item.lockSpriteVariant,
+                hasMapZoneName = item.hasMapZoneName,
+                mapZoneName = item.mapZoneName,
+                components = (item.components ?? new List<StructureComponent>())
+                    .Select(component => new StructureComponent
+                    {
+                        type = component.type,
+                        hierarchyPath = component.hierarchyPath,
+                        componentIndex = component.componentIndex,
+                        dataBase64 = component.dataBase64
+                    }).ToList()
+            });
         }
         var tileSet = new HashSet<StructureObject>(tileObjects);
         file.objects.RemoveAll(tileSet.Contains);
