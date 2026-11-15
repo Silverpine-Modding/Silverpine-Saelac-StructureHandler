@@ -36,8 +36,6 @@ internal sealed partial class StructureEditorUI :
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Sprite[]> spriteVariants =
         new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, Rect> spriteLocalBounds =
-        new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> placementCatalog = new();
     private StructureFile? structure;
     private string currentPath = "";
@@ -80,6 +78,7 @@ internal sealed partial class StructureEditorUI :
     private sealed class SpritePreview
     {
         public Sprite sprite = null!;
+        public string prefabName = "";
         public Vector2 localOrigin;
         public Vector2 localAxisX;
         public Vector2 localAxisY;
@@ -104,6 +103,7 @@ internal sealed partial class StructureEditorUI :
         public SpritePreview part = null!;
         public Sprite sprite = null!;
         public float x, y;
+        public int objectIndex = -1, terrainIndex = -1;
         public PreviewSortKey key;
     }
 
@@ -134,7 +134,6 @@ internal sealed partial class StructureEditorUI :
         // instantiated objects. Drop every editor-held reference on close.
         spritePreviews.Clear();
         spriteVariants.Clear();
-        spriteLocalBounds.Clear();
         ClearRenderCaches();
         ClearItemEditor();
         conflictStructure = null;
@@ -169,7 +168,6 @@ internal sealed partial class StructureEditorUI :
         open = false;
         spritePreviews.Clear();
         spriteVariants.Clear();
-        spriteLocalBounds.Clear();
         ClearRenderCaches();
         StopPlanningBrush();
         StopZoneBrush();
@@ -336,6 +334,7 @@ internal sealed partial class StructureEditorUI :
         GUILayout.EndHorizontal();
 
         DrawPlacementRulesToggle();
+        DrawPreviewDiagnostics();
         Rect preview = GUILayoutUtility.GetRect(
             300, 10000, 300, 10000, GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
         GUI.Box(preview, "");
@@ -454,10 +453,19 @@ internal sealed partial class StructureEditorUI :
         foreach (int index in visibleDraws)
         {
             var command = previewDrawCommands[index];
-            DrawPrefabSprite(preview, WorldToPreview(center, command.x, command.y),
-                command.visual);
+            try
+            {
+                DrawPrefabSprite(preview, WorldToPreview(center, command.x, command.y), command.visual);
+            }
+            catch (Exception exception) when (!capturingPreview)
+            {
+                // GL failures must reach the surface fallback. In direct mode,
+                // isolate an unreadable texture instead of breaking the GUI.
+                ReportPreviewProblem(command.part.prefabName, "Texture drawing failed: " + exception.Message, retry: true);
+            }
         }
         DrawZoneColors(preview, center);
+        DrawMissingPreviewMarkers(preview, center);
         // Editor markers are overlays, not part of the game's sprite ordering.
         if (selectedTerrain >= 0 && selectedTerrain < structure!.supportingTerrain.Count)
         {
@@ -467,6 +475,11 @@ internal sealed partial class StructureEditorUI :
         foreach (int i in visibleMarkers)
         {
             StructureObject item = structure!.objects[i];
+            if (i == selectedObject && objectSelectionBounds.TryGetValue(i, out var selectionBounds))
+            {
+                DrawObjectSelection(preview, center, selectionBounds);
+                continue;
+            }
             if (!showFootprintOverlay && i != selectedObject && GetSpritePreviews(item.prefabName).Count > 0) continue;
             DrawObject(preview, center, item,
                 i == selectedObject
@@ -498,13 +511,20 @@ internal sealed partial class StructureEditorUI :
 
         previewSurfaceValid = false;
         previewDrawCommands.Clear();
-        foreach (var terrain in structure!.supportingTerrain)
+        previewProblems.Clear();
+        for (int i = 0; i < structure!.supportingTerrain.Count; i++)
+        {
+            var terrain = structure.supportingTerrain[i];
             AddPreviewCommands(terrain.prefabName, terrain.x, terrain.y, terrain.z,
-                terrain.spriteVariantIndex, -1);
-        foreach (var item in structure.objects)
-            if (!AddItemPreviewCommands(item))
+                terrain.spriteVariantIndex, -1, terrainIndex: i);
+        }
+        for (int i = 0; i < structure.objects.Count; i++)
+        {
+            var item = structure.objects[i];
+            if (!AddItemPreviewCommands(item, i))
                 AddPreviewCommands(item.prefabName, item.x, item.y, item.z,
-                    item.spriteVariantIndex, item.turnableIndex);
+                    item.spriteVariantIndex, item.turnableIndex, objectIndex: i);
+        }
         previewDrawCommands.Sort((left, right) => left.key.CompareTo(right.key));
         RebuildPreviewIndex();
         renderOrderStructure = structure;
@@ -512,42 +532,58 @@ internal sealed partial class StructureEditorUI :
     }
 
     private void AddPreviewCommands(string prefabName, float x, float y, float z,
-        int variant, int rotation)
+        int variant, int rotation, int objectIndex = -1, int terrainIndex = -1)
     {
-        Sprite[] variants = variant < 0 ? Array.Empty<Sprite>() : GetSpriteVariants(prefabName);
-        foreach (var part in GetSpritePreviews(prefabName))
+        try
         {
-            Sprite sprite = part.sprite;
-            int normalizedRotation = rotation;
-            if (rotation >= 0 && part.turnableSprites.Length > 0)
+            Sprite[] variants = variant < 0 ? Array.Empty<Sprite>() : GetSpriteVariants(prefabName);
+            foreach (var part in GetSpritePreviews(prefabName))
             {
-                normalizedRotation = (rotation % part.turnableSprites.Length + part.turnableSprites.Length) % part.turnableSprites.Length;
-                sprite = part.turnableSprites[normalizedRotation];
+                Sprite sprite = part.sprite;
+                int normalizedRotation = rotation;
+                if (rotation >= 0 && part.turnableSprites.Length > 0)
+                {
+                    normalizedRotation = (rotation % part.turnableSprites.Length + part.turnableSprites.Length) % part.turnableSprites.Length;
+                    sprite = part.turnableSprites[normalizedRotation];
+                }
+                else if (rotation < 0 && variant >= 0 && variants.Length > 0 && part.variantTarget)
+                {
+                    sprite = variants[(variant % variants.Length + variants.Length) % variants.Length];
+                }
+                if (sprite == null || PreviewLightingPolicy.IsFakeAO(sprite.name))
+                {
+                    ReportPreviewProblem(prefabName, "The selected sprite is missing or is a lighting overlay; showing the base sprite.");
+                    sprite = part.sprite;
+                }
+                try { PrepareSprite(part, sprite); }
+                catch (Exception exception)
+                {
+                    ReportPreviewProblem(prefabName, "Could not read selected sprite: " + exception.Message + " Showing the base sprite.");
+                    sprite = part.sprite;
+                    PrepareSprite(part, sprite);
+                }
+                int order = part.ySorted
+                    ? PreviewSortKey.YOrder(y + part.sorterY, part.sorterOffset,
+                        PreviewSortKey.RotationOffset(part.turnableName, normalizedRotation))
+                    : part.sortingOrder;
+                previewDrawCommands.Add(new PreviewDrawCommand
+                {
+                    part = part, sprite = sprite, x = x, y = y,
+                    objectIndex = objectIndex, terrainIndex = terrainIndex,
+                    key = new PreviewSortKey(part.sortingLayer, order, part.renderQueue,
+                        z + part.localZ, previewDrawCommands.Count)
+                });
             }
-            else if (rotation < 0 && variant >= 0 && variants.Length > 0 && part.variantTarget)
-            {
-                sprite = variants[(variant % variants.Length + variants.Length) % variants.Length];
-            }
-            if (sprite == null || PreviewLightingPolicy.IsFakeAO(sprite.name)) continue;
-            int order = part.ySorted
-                ? PreviewSortKey.YOrder(y + part.sorterY, part.sorterOffset,
-                    PreviewSortKey.RotationOffset(part.turnableName, normalizedRotation))
-                : part.sortingOrder;
-            previewDrawCommands.Add(new PreviewDrawCommand
-            {
-                part = part, sprite = sprite, x = x, y = y,
-                key = new PreviewSortKey(part.sortingLayer, order, part.renderQueue,
-                    z + part.localZ, previewDrawCommands.Count)
-            });
+        }
+        catch (Exception exception)
+        {
+            ReportPreviewProblem(prefabName, "Could not build preview: " + exception.Message, retry: true);
         }
     }
 
     private void DrawObject(
         Rect preview, Vector2 center, StructureObject item, Color markerColor)
     {
-        Vector2 point = WorldToPreview(center, item.x, item.y);
-        if (!IsPrefabVisible(preview, point, item.prefabName))
-            return;
         List<SpritePreview> previews = GetSpritePreviews(item.prefabName);
 
         // A full one-world-unit square matches prefab_tile_rock and makes the
@@ -574,18 +610,6 @@ internal sealed partial class StructureEditorUI :
                 DrawPreviewTexture(marker, Texture2D.whiteTexture);
         }
         GUI.color = old;
-    }
-
-    private bool IsPrefabVisible(
-        Rect preview, Vector2 point, string prefabName)
-    {
-        Rect local = GetPrefabLocalBounds(prefabName);
-        Rect screen = new(
-            point.x + local.xMin * zoom,
-            point.y - local.yMax * zoom,
-            local.width * zoom,
-            local.height * zoom);
-        return preview.Overlaps(screen);
     }
 
     private void DrawPrefabSprite(
@@ -631,7 +655,11 @@ internal sealed partial class StructureEditorUI :
     {
         if (spritePreviews.TryGetValue(
                 prefabName, out List<SpritePreview> cached))
+        {
+            if (previewAssetErrors.TryGetValue(prefabName, out string reason))
+                ReportPreviewProblem(prefabName, reason, retry: true);
             return cached;
+        }
 
         List<SpritePreview> previews = new();
         spritePreviews[prefabName] = previews;
@@ -639,56 +667,64 @@ internal sealed partial class StructureEditorUI :
         {
             GameObject? prefab = Plugin.ResolvePrefab(prefabName);
             if (prefab == null)
+            {
+                ReportPreviewProblem(prefabName, "Prefab is not registered. Check the supplying mod/version and its startup errors; automatic retry is enabled.", retry: true);
                 return previews;
+            }
 
             Turnable turnable =
                 prefab.GetComponentInChildren<Turnable>(true);
             YSorter[] sorters = prefab.GetComponentsInChildren<YSorter>(true);
-            SpriteRenderer variantTarget = prefab.GetComponentsInChildren<SpriteRenderer>(true)
-                .FirstOrDefault(candidate => candidate.enabled && candidate.sprite != null);
-            List<SpriteRenderer> renderers =
-                prefab.GetComponentsInChildren<SpriteRenderer>(false)
-                    .Where(candidate =>
-                        candidate.sprite != null &&
-                        candidate.enabled &&
-                        !IsPreviewLightingEffect(candidate, prefab.transform))
-                    .ToList();
+            List<SpriteRenderer> renderers = GetPreviewRenderers(prefab);
+            SpriteRenderer? variantTarget = renderers.FirstOrDefault();
+            if (renderers.Count == 0)
+                ReportPreviewProblem(prefabName, "Prefab is registered, but has no enabled, active-branch surface sprite (it may contain only disabled renderers or lighting effects).", retry: true);
 
             foreach (SpriteRenderer renderer in renderers)
             {
-                // Imports retain the prefab root's rotation and scale.
-                Vector3 relativeOrigin = renderer.transform.position - prefab.transform.position;
-                Vector3 relativeX = renderer.transform.TransformVector(Vector3.right);
-                Vector3 relativeY = renderer.transform.TransformVector(Vector3.up);
-                bool usesTurnableSprites =
-                    turnable != null &&
-                    turnable.sprites != null &&
-                    turnable.gameObject.GetSpriteRendererExtended() == renderer;
-                YSorter sorter = sorters.FirstOrDefault(candidate =>
-                    candidate.gameObject.GetSpriteRendererExtended() == renderer);
-                previews.Add(new SpritePreview
+                try
                 {
-                    sprite = renderer.sprite,
-                    localOrigin = new Vector2(
-                        relativeOrigin.x, relativeOrigin.y),
-                    localAxisX = new Vector2(relativeX.x, relativeX.y),
-                    localAxisY = new Vector2(relativeY.x, relativeY.y),
-                    turnableSprites = usesTurnableSprites
-                        ? turnable!.sprites!
-                        : Array.Empty<Sprite>(),
-                    flipX = renderer.flipX,
-                    flipY = renderer.flipY,
-                    sortingLayer = SortingLayer.GetLayerValueFromID(renderer.sortingLayerID),
-                    sortingOrder = renderer.sortingOrder,
-                    renderQueue = renderer.sharedMaterial != null ? renderer.sharedMaterial.renderQueue : 3000,
-                    localZ = relativeOrigin.z,
-                    ySorted = sorter != null,
-                    sorterY = sorter != null ? sorter.transform.position.y - prefab.transform.position.y : 0f,
-                    sorterOffset = sorter != null ? sorter.offset : 0,
-                    turnableName = usesTurnableSprites ? turnable!.name : "",
-                    variantTarget = renderer == variantTarget,
-                    color = renderer.color
-                });
+                    // Imports retain the prefab root's rotation and scale.
+                    Vector3 relativeOrigin = renderer.transform.position - prefab.transform.position;
+                    Vector3 relativeX = renderer.transform.TransformVector(Vector3.right);
+                    Vector3 relativeY = renderer.transform.TransformVector(Vector3.up);
+                    bool usesTurnableSprites =
+                        turnable != null &&
+                        turnable.sprites != null &&
+                        turnable.gameObject.GetSpriteRendererExtended() == renderer;
+                    YSorter sorter = sorters.FirstOrDefault(candidate =>
+                        candidate.gameObject.GetSpriteRendererExtended() == renderer);
+                    var part = new SpritePreview
+                    {
+                        prefabName = prefabName,
+                        sprite = renderer.sprite,
+                        localOrigin = new Vector2(
+                            relativeOrigin.x, relativeOrigin.y),
+                        localAxisX = new Vector2(relativeX.x, relativeX.y),
+                        localAxisY = new Vector2(relativeY.x, relativeY.y),
+                        turnableSprites = usesTurnableSprites
+                            ? turnable!.sprites!
+                            : Array.Empty<Sprite>(),
+                        flipX = renderer.flipX,
+                        flipY = renderer.flipY,
+                        sortingLayer = SortingLayer.GetLayerValueFromID(renderer.sortingLayerID),
+                        sortingOrder = renderer.sortingOrder,
+                        renderQueue = renderer.sharedMaterial != null ? renderer.sharedMaterial.renderQueue : 3000,
+                        localZ = relativeOrigin.z,
+                        ySorted = sorter != null,
+                        sorterY = sorter != null ? sorter.transform.position.y - prefab.transform.position.y : 0f,
+                        sorterOffset = sorter != null ? sorter.offset : 0,
+                        turnableName = usesTurnableSprites ? turnable!.name : "",
+                        variantTarget = renderer == variantTarget,
+                        color = renderer.color
+                    };
+                    PrepareSprite(part, part.sprite);
+                    previews.Add(part);
+                }
+                catch (Exception exception)
+                {
+                    ReportPreviewProblem(prefabName, "Could not read a sprite part: " + exception.Message, retry: true);
+                }
             }
             previews.Sort((left, right) =>
             {
@@ -701,67 +737,9 @@ internal sealed partial class StructureEditorUI :
         }
         catch (Exception exception)
         {
-            Plugin.Log.LogWarning(
-                $"Could not preview sprite for {prefabName}: {exception.Message}");
+            ReportPreviewProblem(prefabName, "Could not inspect prefab sprites: " + exception.Message, retry: true);
             return previews;
         }
-    }
-
-    private Rect GetPrefabLocalBounds(string prefabName)
-    {
-        if (spriteLocalBounds.TryGetValue(prefabName, out Rect cached))
-            return cached;
-
-        bool initialized = false;
-        float minX = -0.5f;
-        float minY = -0.5f;
-        float maxX = 0.5f;
-        float maxY = 0.5f;
-        foreach (SpritePreview preview in GetSpritePreviews(prefabName))
-        {
-            IEnumerable<Sprite> sprites =
-                new[] { preview.sprite }
-                    .Concat(preview.turnableSprites)
-                    .Concat(GetSpriteVariants(prefabName))
-                    .Where(sprite => sprite != null)
-                    .Distinct();
-            foreach (Sprite sprite in sprites)
-            {
-                Bounds bounds = sprite.bounds;
-                Vector2 localOffset =
-                    preview.localOrigin +
-                    preview.localAxisX * (preview.flipX ? -bounds.center.x : bounds.center.x) +
-                    preview.localAxisY * (preview.flipY ? -bounds.center.y : bounds.center.y);
-                Vector2 size = new(
-                    Mathf.Abs(preview.localAxisX.x * bounds.size.x) +
-                    Mathf.Abs(preview.localAxisY.x * bounds.size.y),
-                    Mathf.Abs(preview.localAxisX.y * bounds.size.x) +
-                    Mathf.Abs(preview.localAxisY.y * bounds.size.y));
-                float spriteMinX = localOffset.x - size.x * 0.5f;
-                float spriteMaxX = localOffset.x + size.x * 0.5f;
-                float spriteMinY = localOffset.y - size.y * 0.5f;
-                float spriteMaxY = localOffset.y + size.y * 0.5f;
-                if (!initialized)
-                {
-                    minX = spriteMinX;
-                    maxX = spriteMaxX;
-                    minY = spriteMinY;
-                    maxY = spriteMaxY;
-                    initialized = true;
-                }
-                else
-                {
-                    minX = Mathf.Min(minX, spriteMinX);
-                    maxX = Mathf.Max(maxX, spriteMaxX);
-                    minY = Mathf.Min(minY, spriteMinY);
-                    maxY = Mathf.Max(maxY, spriteMaxY);
-                }
-            }
-        }
-
-        Rect result = Rect.MinMaxRect(minX, minY, maxX, maxY);
-        spriteLocalBounds[prefabName] = result;
-        return result;
     }
 
     private void MarkStructureDirty(bool geometryChanged = true, bool renderChanged = false,
@@ -829,6 +807,9 @@ internal sealed partial class StructureEditorUI :
             return cached;
 
         Sprite[] variants = GetSpriteVariantsForPrefab(prefabName);
+        // Cache no-variant results too: thousands of plain floor tiles must not
+        // repeat reflection. Failed preview retries invalidate this entry, and
+        // Refresh Previews clears both the instance and shared caches.
         spriteVariants[prefabName] = variants;
         return variants;
     }
@@ -1008,9 +989,8 @@ internal sealed partial class StructureEditorUI :
         {
             Vector2Int clickedCell =
                 PreviewToWorldCell(center, current.mousePosition);
-            EnsureEditorGeometry();
-            List<Tuple<bool, int>> candidates = cellIndex.TryGetValue(clickedCell, out var indexed)
-                ? indexed : new List<Tuple<bool, int>>();
+            List<Tuple<bool, int>> candidates = FindPreviewSelections(
+                PreviewToWorldPoint(center, current.mousePosition), clickedCell);
 
             if (candidates.Count == 0)
             {
@@ -1679,24 +1659,26 @@ internal sealed partial class StructureEditorUI :
         lastCatalogTab = -1;
         try
         {
-            placementCatalog.AddRange(
-                Plugin.GetKnownPrefabNames()
-                    .Where(name =>
-                    {
-                        if (IsUnsafeQuickPlaceName(name))
-                            return false;
-                        GameObject? prefab =
-                            Plugin.ResolvePrefab(name);
-                        return prefab != null &&
-                               prefab.GetComponent<EntityMover>() == null &&
-                               prefab.GetComponent<NeuralNPC>() == null &&
-                               prefab.GetComponent<Enemy>() == null &&
-                               prefab.GetComponentsInChildren<SpriteRenderer>(
-                                   includeInactive: true)
-                                   .Any(renderer => renderer.sprite != null);
-                    })
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(CatalogDisplayName, StringComparer.OrdinalIgnoreCase));
+            foreach (string name in Plugin.GetKnownPrefabNames().Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    if (IsUnsafeQuickPlaceName(name)) continue;
+                    GameObject? prefab = Plugin.ResolvePrefab(name);
+                    if (prefab == null || prefab.GetComponent<EntityMover>() != null ||
+                        prefab.GetComponent<NeuralNPC>() != null || prefab.GetComponent<Enemy>() != null ||
+                        GetPreviewRenderers(prefab).Count == 0) continue;
+                    catalogMetadata[name] = (CatalogDisplayName(name), GetQuickPlaceCategory(name));
+                    placementCatalog.Add(name);
+                }
+                catch (Exception exception)
+                {
+                    if (loggedPreviewProblems.Add("catalog:" + name))
+                        Plugin.Log.LogWarning($"Skipped quick-place preview '{name}': {exception.Message}");
+                }
+            }
+            placementCatalog.Sort((left, right) => StringComparer.OrdinalIgnoreCase.Compare(
+                catalogMetadata[left].Label, catalogMetadata[right].Label));
         }
         catch (Exception exception)
         {
@@ -1704,8 +1686,6 @@ internal sealed partial class StructureEditorUI :
                 "Could not build the editor placement catalog: " + exception);
             status = "Could not build the quick-place catalog.";
         }
-        foreach (var name in placementCatalog)
-            catalogMetadata[name] = (CatalogDisplayName(name), GetQuickPlaceCategory(name));
     }
 
     private static string CatalogDisplayName(string prefabName)

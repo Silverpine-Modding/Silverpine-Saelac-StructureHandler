@@ -153,6 +153,7 @@ GUIUtility.hotControl = 0;
 StartDrag();
 ui.ResetInput();
 Check(GUIUtility.hotControl == 0 && GUIUtility.keyboardControl == 0, "Editor close releases its own active text gesture and focus");
+ui.CheckSelections(Check);
 Console.WriteLine($"PASS {checks} headless editor input checks (live Unity interaction still requires an in-game test).");
 
 namespace StructureHandler

@@ -10,6 +10,7 @@ void Test(string name, Action body)
 }
 void Check(bool value) { if (!value) throw new Exception("Assertion failed."); }
 EditorPerformanceChecks.Run(Test);
+PreviewSelectionChecks.Run(Test, Check);
 T Throws<T>(Action body) where T : Exception
 {
     try { body(); } catch (T error) { return error; }
@@ -1427,4 +1428,5 @@ Test("Queued structure partitioning retains native furniture collision records",
     Check(queued.components.Single().dataBase64 == "AQ==");
 });
 PrefabLifecycleChecks.Run(Test, Check);
+PreviewAssetChecks.Run(Test, Check);
 Console.WriteLine($"{passed} regression tests passed.");

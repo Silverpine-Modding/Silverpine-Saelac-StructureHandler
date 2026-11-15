@@ -3,7 +3,35 @@
 Adds Structure Handler controls to Silverpine's shared in-game **Mods** menu
 and a structure editor to the main-menu mod tools.
 
-Version **1.2.26** requires **ModdingTools 1.12.0 or newer**.
+Version **1.2.28** requires **ModdingTools 1.12.0 or newer**.
+
+## Preview recovery and diagnostics (1.2.28)
+
+- Missing or unreadable prefab art now reports the prefab name and reason in
+  **Preview issues > Details**; tiles without art get a magenta outline. Records
+  remain editable and are never replaced with another terrain type.
+- Failed lookups retry automatically with bounded work and backoff. **Refresh
+  Previews** rebuilds the catalog and asset caches without changing the document.
+- Quick Place and the preview use the same renderer discovery, including active
+  children beneath inactive mod templates while excluding inactive alternatives.
+- Material names such as `TerrainLighting` no longer hide actual terrain. FakeAO
+  and light/shadow overlay parts remain excluded; water transparency is retained.
+- Invalid sprite parts are isolated. An unavailable/lighting-only selected variant
+  shows the base sprite with a warning without changing saved variant indices.
+- A missing or failed companion mod still needs to be installed/fixed; this does
+  not fabricate missing assets or silently change roofed terrain to normal grass.
+
+## Sprite-aligned selections (1.2.27)
+
+- Preview clicks and orange object highlights now follow the active sprite's
+  pivot, scale, position and orientation, fixing offset rug selections and the
+  oversized Kitsune statue selection. Unused variants cannot enlarge the bounds.
+- Overlapping sprites cycle from front to back; multipart objects count once.
+  Water and underlying floors remain selectable. Missing/invisible prefabs keep
+  grid-cell selection as a fallback.
+- Green Tiles still shows occupied grid cells. Import footprints, placement
+  restrictions, saved coordinates and game assets are unchanged. Selection reuses
+  the cached sprite spatial index instead of scanning the document per click.
 
 ## Text-selection drag capture (1.2.26)
 

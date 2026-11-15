@@ -1,16 +1,15 @@
-# Structure Handler 1.2.26
+# Structure Handler 1.2.28
 
 Created by **Saelac and ChatGPT**.
 
-This is a cumulative release from the previously published **1.2.12**. It includes
-the editor performance/input fixes, Items tab, placement controls, water and zone
-changes, shared market crates, and mod-prefab terrain fixes described below.
+This update adds editor preview recovery and diagnostics, retaining the selection
+and text-input fixes from 1.2.27 and earlier.
 
 ## Requirements and installation
 
 - Silverpine 1.7.3 and BepInEx 5.
 - **[ModdingTools 1.12.0 or newer](https://github.com/Silverpine-Modding/Silverpine-Saelac-Modding-Tools/releases)** must be installed separately. This requirement is enforced by the plugin.
-- Close the game. Extract `StructureHandler-1.2.26.zip` into
+- Close the game. Extract `StructureHandler-1.2.28.zip` into
   `BepInEx/plugins/StructureHandler/`, replacing the previous DLL, or replace
   that DLL with the standalone download. Do not keep a second copy elsewhere
   under `BepInEx/plugins`.
@@ -18,7 +17,42 @@ changes, shared market crates, and mod-prefab terrain fixes described below.
   `.sav.moddingtools` companion alongside its `.sav` file when copying or
   restoring saves. This download does not contain or update ModdingTools.
 
-## New in 1.2.26
+## New in 1.2.28
+
+- Report missing registrations and unreadable sprites with the prefab name and
+  reason in Preview issues > Details; outline missing art in magenta.
+- Retry failed prefab previews automatically with bounded work and backoff;
+  provide Refresh Previews for manually rebuilding asset caches and Quick Place.
+- Use consistent renderer discovery for catalog and preview. Active children of
+  inactive prefab templates are visible; intentionally inactive alternatives are
+  not drawn. A broken part cannot abort the rest of the document preview.
+- Stop classifying ordinary lighting-material names as effect overlays. Keep
+  FakeAO suppression and native alpha, including translucent bath water.
+- Fall back to the base sprite for missing, unreadable or FakeAO sprite variants,
+  with a warning and no changes to persisted variant indices.
+- No JSON, save, import, game-asset or companion-plugin changes. This cannot
+  supply assets from a missing/failed mod; diagnostics now explain that condition.
+- Validation: clean Release build, 236 regression tests, 64 headless input/
+  selection checks and compiled wiring checks. The affected installation still
+  needs a live Unity visual retest; its original failure could not be reproduced
+  from a log because that log was unavailable.
+
+## Retained from 1.2.27
+
+- Align preview clicks and orange object highlights with the active sprite's
+  actual pivot, scale and orientation. Fix offset selections for all three rugs
+  and the oversized Kitsune statue selection, including its different facings.
+- Use cached, spatially indexed visual bounds instead of rounded import cells.
+  Unused sprite variants no longer enlarge the preview's marker bounds.
+- Cycle overlapping art from front to back, counting each multipart object once.
+  Keep water/floors selectable and a cell-based fallback for missing/invisible art.
+- Green Tiles remains an occupancy overlay. No changes to imports, placement
+  rules, saved coordinates, JSON format or companion plugins are required.
+- Validation: clean Release build, 229 regression tests, 64 headless input/
+  selection checks and compiled wiring checks. Live Unity visual testing remains
+  necessary to confirm the appearance on screen.
+
+## Retained from 1.2.26
 
 - Fix stranded mouse capture after text-selection drags. Release it on mouse-up
   even outside/missing fields, and recover missed releases before the next click.

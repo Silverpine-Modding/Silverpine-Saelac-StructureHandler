@@ -140,6 +140,31 @@ try {
     })
     if ($mutations.Count -gt 0) { throw 'The preview filter must not modify native prefab/rendering state.' }
     'PASS Preview lighting filter only reads prefab metadata; native renderers and materials are not modified.'
+    Assert-MethodCalls 'StructureEditorUI' 'GetSpritePreviews' 'StructureEditorUI::GetPreviewRenderers'
+    Assert-MethodCalls 'StructureEditorUI' 'BuildPlacementCatalog' 'StructureEditorUI::GetPreviewRenderers'
+    Assert-MethodCalls 'StructureEditorUI' 'GetPreviewRenderers' 'PreviewRendererDiscovery::Collect'
+    Assert-MethodCalls 'StructureEditorUI' 'Update' 'PreviewRetryQueue::TakeDue'
+    Assert-MethodCalls 'StructureEditorUI' 'Update' 'StructureEditorUI::ForgetPrefabPreview'
+    Assert-MethodCalls 'StructureEditorUI' 'Update' 'StructureEditorUI::GetSpritePreviews'
+    Assert-MethodCalls 'StructureEditorUI' 'Update' 'StructureEditorUI::InvalidateVisuals'
+    Assert-MethodCalls 'StructureEditorUI' 'GetSpritePreviews' 'StructureEditorUI::ReportPreviewProblem'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawPreviewPanel' 'StructureEditorUI::DrawPreviewDiagnostics'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawRecords' 'StructureEditorUI::DrawMissingPreviewMarkers'
+    Assert-MethodCalls 'StructureEditorUI' 'ClearRenderCaches' 'StructureEditorUI::ClearPreviewDiagnostics'
+    foreach ($method in @('GetSpritePreviews', 'AddPreviewCommands', 'RebuildPreviewIndex', 'BuildPlacementCatalog')) {
+        $body = $editor.Methods | Where-Object Name -eq $method
+        if (-not ($body.Body.ExceptionHandlers | Where-Object HandlerType -eq 'Catch')) {
+            throw "$method must isolate failed assets instead of aborting the preview/catalog."
+        }
+    }
+    foreach ($method in @('RefreshPreviewAssets', 'ReportPreviewProblem', 'Update')) {
+        $body = $editor.Methods | Where-Object Name -eq $method
+        if ($body.Body.Instructions | Where-Object {
+            ($_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -in @('Save', 'MarkStructureDirty', 'Import', 'SetActive')) -or
+            ($_.OpCode.Name -eq 'stfld' -and $_.Operand.DeclaringType.Name -in @('StructureFile', 'StructureObject', 'StructureTerrain'))
+        }) { throw "$method must not mutate JSON records or native prefab activation." }
+    }
+    'PASS Preview assets share renderer discovery, retry negative caches, isolate failures and expose diagnostics without editing records.'
     Assert-MethodCalls 'StructureEditorUI' 'DrawSelectedObject' 'StructureEditorUI::DrawFurnitureCollision'
     Assert-MethodCalls 'StructureEditorUI' 'DrawFurnitureCollision' 'FurnitureCollision::TryReadEnabled'
     Assert-MethodCalls 'StructureEditorUI' 'DrawFurnitureCollision' 'FurnitureCollision::SetEnabled'
@@ -164,6 +189,17 @@ try {
     Assert-MethodCalls 'StructureEditorUI' 'DrawRecords' 'StructureEditorUI::EnsureRenderOrder'
     Assert-MethodCalls 'StructureEditorUI' 'DrawPrefabSprite' 'GUIUtility::RotateAroundPivot'
     'PASS Compiled preview uses native layer priorities, global sprite-part ordering, Y offsets and transformed quads.'
+    Assert-MethodCalls 'StructureEditorUI' 'HandlePreviewInput' 'StructureEditorUI::FindPreviewSelections'
+    Assert-MethodCalls 'StructureEditorUI' 'FindPreviewSelections' 'StructureEditorUI::EnsureRenderOrder'
+    Assert-MethodCalls 'StructureEditorUI' 'FindPreviewSelections' 'PreviewSpatialIndex::Query'
+    Assert-MethodCalls 'StructureEditorUI' 'FindPreviewSelections' 'PreviewSelectionShape::Contains'
+    Assert-MethodCalls 'StructureEditorUI' 'PrepareSprite' 'PreviewSelectionShape::.ctor'
+    Assert-MethodCalls 'StructureEditorUI' 'RebuildPreviewIndex' 'PreviewSelectionShape::At'
+    Assert-MethodCalls 'StructureEditorUI' 'RebuildPreviewIndex' 'PreviewSelectionShape::Union'
+    Assert-MethodCalls 'StructureEditorUI' 'DrawRecords' 'StructureEditorUI::DrawObjectSelection'
+    Assert-MethodCalls 'StructureEditorUI' 'ClearRenderCaches' 'StructureEditorUI::ClearPreviewSelection'
+    if ($editor.Methods.Name -contains 'GetPrefabLocalBounds') { throw 'Preview bounds must not combine unused sprite variants.' }
+    'PASS Preview picking/highlights use active sprite geometry and spatial queries; cached selection state is released on close.'
     Assert-MethodCalls 'StructureEditorUI' 'DrawPreviewPanel' 'StructureEditorUI::DrawCachedPreview'
     Assert-MethodCalls 'StructureEditorUI' 'DrawCachedPreview' 'StructureEditorUI::ProcessItemPreviewQueue'
     Assert-MethodCalls 'StructureEditorUI' 'DrawCachedPreview' 'StructureEditorUI::RenderPreviewSurface'

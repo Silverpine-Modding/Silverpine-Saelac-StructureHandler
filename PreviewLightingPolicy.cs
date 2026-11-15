@@ -19,11 +19,18 @@ internal static class PreviewLightingPolicy
     private static bool IsEffectName(string? name)
     {
         if (string.IsNullOrEmpty(name)) return false;
-        return IsFakeAO(name) ||
-               name.IndexOf("light", StringComparison.OrdinalIgnoreCase) >= 0 ||
-               name.IndexOf("glow", StringComparison.OrdinalIgnoreCase) >= 0 ||
-               name.IndexOf("shadow", StringComparison.OrdinalIgnoreCase) >= 0 ||
-               name.IndexOf("ambient", StringComparison.OrdinalIgnoreCase) >= 0 ||
-               name.IndexOf("occlusion", StringComparison.OrdinalIgnoreCase) >= 0;
+        if (IsFakeAO(name)) return true;
+        // A material such as "TerrainLighting" or "Sprites/Lit" is not a
+        // light overlay. Nor is a lantern/furniture prefab a light effect.
+        if (name.StartsWith("prefab_", StringComparison.OrdinalIgnoreCase) &&
+            !name.StartsWith("prefab_effect_", StringComparison.OrdinalIgnoreCase)) return false;
+        foreach (string token in name.Split(new[] { ' ', '_', '/', '-', '(', ')' },
+                     StringSplitOptions.RemoveEmptyEntries))
+            if (token.Equals("light", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("glow", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("shadow", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("ambient", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("occlusion", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 }

@@ -10,5 +10,8 @@
     <Compile Include="..\..\StructureEditorCoordinates.cs" Link="StructureEditorCoordinates.cs" />
     <Compile Include="..\..\StructureEditorTextFields.cs" Link="StructureEditorTextFields.cs" />
     <Compile Include="..\..\StructureEditorTextInput.cs" Link="StructureEditorTextInput.cs" />
+    <Compile Include="..\..\StructureEditorSelection.cs" Link="StructureEditorSelection.cs" />
+    <Compile Include="..\..\PreviewSelectionShape.cs" Link="PreviewSelectionShape.cs" />
+    <Compile Include="..\..\EditorSpatialIndex.cs" Link="EditorSpatialIndex.cs" />
   </ItemGroup>
 </Project>

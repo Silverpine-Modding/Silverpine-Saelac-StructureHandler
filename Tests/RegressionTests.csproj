@@ -18,6 +18,7 @@
     <Compile Include="..\SnapshotHistory.cs" Link="SnapshotHistory.cs" />
     <Compile Include="..\EditorDocumentHistory.cs" Link="EditorDocumentHistory.cs" />
     <Compile Include="..\EditorSpatialIndex.cs" Link="EditorSpatialIndex.cs" />
+    <Compile Include="..\PreviewSelectionShape.cs" Link="PreviewSelectionShape.cs" />
     <Compile Include="..\EditorWorkQueue.cs" Link="EditorWorkQueue.cs" />
     <Compile Include="..\EditorCoordinateDraft.cs" Link="EditorCoordinateDraft.cs" />
     <Compile Include="..\StructureJsonFile.cs" Link="StructureJsonFile.cs" />
@@ -33,6 +34,8 @@
     <Compile Include="..\DestinationGroundPolicy.cs" Link="DestinationGroundPolicy.cs" />
     <Compile Include="..\DestinationSupportPolicy.cs" Link="DestinationSupportPolicy.cs" />
     <Compile Include="..\PreviewLightingPolicy.cs" Link="PreviewLightingPolicy.cs" />
+    <Compile Include="..\PreviewRetryQueue.cs" Link="PreviewRetryQueue.cs" />
+    <Compile Include="..\PreviewRendererDiscovery.cs" Link="PreviewRendererDiscovery.cs" />
     <Compile Include="..\FurnitureCollision.cs" Link="FurnitureCollision.cs" />
     <Compile Include="..\PreviewSortKey.cs" Link="PreviewSortKey.cs" />
     <Compile Include="..\StructurePlacementPolicy.cs" Link="StructurePlacementPolicy.cs" />

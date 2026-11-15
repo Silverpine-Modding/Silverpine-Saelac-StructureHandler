@@ -67,7 +67,7 @@ internal static class PrefabLifecycleChecks
 namespace UnityEngine
 {
     public enum HideFlags { None = 0, HideAndDontSave = 61 }
-    public class GameObject
+    public partial class GameObject
     {
         public bool activeSelf;
         public HideFlags hideFlags = HideFlags.HideAndDontSave;

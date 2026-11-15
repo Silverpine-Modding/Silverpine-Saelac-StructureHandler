@@ -405,7 +405,7 @@ internal sealed partial class StructureEditorUI
         itemVisuals.Remove(record);
     }
 
-    private bool AddItemPreviewCommands(StructureObject record)
+    private bool AddItemPreviewCommands(StructureObject record, int objectIndex)
     {
         if (!StructureItemData.IsItem(record)) return false;
         string inventory = record.components.LastOrDefault(c => StructureItemData.IsComponent(c, "WorldInventory"))?.dataBase64 ?? "";
@@ -422,6 +422,7 @@ internal sealed partial class StructureEditorUI
         previewDrawCommands.Add(new PreviewDrawCommand
         {
             part = part, sprite = part.sprite, x = record.x, y = record.y,
+            objectIndex = objectIndex,
             key = new PreviewSortKey(part.sortingLayer, part.ySorted ? PreviewSortKey.YOrder(record.y + part.sorterY, part.sorterOffset, 0) : part.sortingOrder,
                 part.renderQueue, record.z + part.localZ, previewDrawCommands.Count)
         });

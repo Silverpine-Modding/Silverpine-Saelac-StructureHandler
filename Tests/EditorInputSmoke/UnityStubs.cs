@@ -6,9 +6,15 @@ public enum EventType { Layout, Repaint, KeyDown, KeyUp, MouseDown, MouseDrag, M
 public enum KeyCode { None, Return, KeypadEnter, Escape, A }
 public enum FocusType { Keyboard }
 public readonly record struct Vector2(float x, float y);
+public readonly record struct Vector2Int(int x, int y);
+public readonly record struct Color(float r, float g, float b, float a);
+public sealed class Texture2D { public static readonly Texture2D whiteTexture = new(); }
 public readonly record struct Rect(float x, float y, float width, float height)
 {
+    public float xMax => x + width;
+    public float yMax => y + height;
     public bool Contains(Vector2 point) => point.x >= x && point.x < x + width && point.y >= y && point.y < y + height;
+    public bool Overlaps(Rect other) => x < other.xMax && xMax > other.x && y < other.yMax && yMax > other.y;
 }
 public sealed class GUIContent(string text = "") { public string text = text; }
 public sealed class GUIStyle { }
@@ -39,7 +45,11 @@ public static class GUILayout
     public static void EndHorizontal() { }
     public static void Label(string _, params GUILayoutOption[] options) { }
 }
-public static class Mathf { public static float Abs(float value) => Math.Abs(value); }
+public static class Mathf
+{
+    public static float Abs(float value) => Math.Abs(value);
+    public static float Min(params float[] values) => values.Min();
+}
 public sealed class TextEditor
 {
     public string text = "";
@@ -72,6 +82,7 @@ public static class GUIUtility
 }
 public static class GUI
 {
+    public static Color color;
     public static GUISkin skin = new();
     private static string nextName = "";
     private static readonly Dictionary<int, string> names = new();
