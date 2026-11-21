@@ -28,8 +28,7 @@ internal static class StructureFileNormalizer
         file.supportingTerrain.RemoveAll(item => item == null);
         List<StructureObject> tileObjects = file.objects
             .Where(item => !string.IsNullOrWhiteSpace(item.prefabName) &&
-                           item.prefabName.StartsWith(
-                "prefab_tile_", StringComparison.OrdinalIgnoreCase))
+                           StructurePlacementPolicy.IsTerrainRecordName(item.prefabName))
             .ToList();
         foreach (StructureObject item in tileObjects)
         {

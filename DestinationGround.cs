@@ -34,14 +34,14 @@ internal static class DestinationGround
         if (required.Count == 0) return new();
 
         var byCell = new Dictionary<Vector2Int, List<(string Prefab, bool Constructed, string? Previous, float Z)>>();
-        foreach (var item in originals.Where(item => item != null && item.activeInHierarchy && StructureTransfer.IsTerrainObject(item)))
+        foreach (var item in originals.Where(item => item != null && item.activeInHierarchy))
         {
+            var cell = item.transform.GetVector2IntPosition();
+            if (!required.Contains(cell)) continue;
             // A world-exit utility tile is not a reconstructible ground type:
             // its direction cannot be retained in GrassTileHandler's one string.
             if (item.GetComponentInChildren<WorldTileChanger>(true) != null) continue;
             var handler = item.GetComponent<GrassTileHandler>();
-            var cell = item.transform.GetVector2IntPosition();
-            if (!required.Contains(cell)) continue;
             if (!byCell.TryGetValue(cell, out var candidates)) byCell[cell] = candidates = new();
             candidates.Add((SerializationManager.GetPrefabName(item), handler != null,
                 handler == null ? null : Previous.GetValue(handler) as string, item.transform.position.z));
@@ -50,7 +50,8 @@ internal static class DestinationGround
         var result = new Dictionary<Vector2Int, string>();
         foreach (var cell in required)
         {
-            string? name = byCell.TryGetValue(cell, out var candidates) ? DestinationGroundPolicy.Choose(candidates) : null;
+            string? name = byCell.TryGetValue(cell, out var candidates) ?
+                DestinationGroundPolicy.Choose(candidates, StructureEditorUI.GetPlacementSlot) : null;
             // Fail before replacement instead of recording exported/default
             // grass, an old building, or a prefab native deconstruction cannot spawn.
             if (string.IsNullOrWhiteSpace(name) || SerializationManager.GetPrefabFromName(name) == null)
@@ -79,6 +80,7 @@ internal static class DestinationGround
         {
             // Native deconstruction creates fresh terrain. It is not a pool
             // duplicate; plain dirt needs supplemental saving after restoration.
+            ImportedPrefabLifecycle.Prepare(result, prefab.name);
             StructureTransfer.RegisterRestoredObjects(new[] { result });
             StructureTerrainPersistence.RecordRestoredGround(result);
         }

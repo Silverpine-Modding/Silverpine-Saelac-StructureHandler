@@ -25,7 +25,7 @@ internal static class ZonePainting
                 var tile = file.objects[entry.Item2];
                 // Legacy tile records are accepted, but walls/furniture must
                 // not gain a zone merely because they overlap painted ground.
-                if (!tile.prefabName.StartsWith("prefab_tile_", StringComparison.OrdinalIgnoreCase) ||
+                if (!StructurePlacementPolicy.IsTerrainRecordName(tile.prefabName) ||
                     (tile.hasMapZoneName && tile.mapZoneName == zone)) continue;
                 tile.hasMapZoneName = true;
                 tile.mapZoneName = zone;

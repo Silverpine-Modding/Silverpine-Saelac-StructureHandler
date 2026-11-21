@@ -485,6 +485,7 @@ try {
     Assert-MethodCalls 'StructureSaveState' 'Reset' 'ImportFootprint::Reset'
     Assert-MethodCalls 'StructureSaveState' 'TileCleared' 'ImportFootprint::ClearWorldTile'
     Assert-MethodCalls 'DestinationGround' 'InstantiateRestoredGround' 'StructureTerrainPersistence::RecordRestoredGround'
+    Assert-MethodCalls 'DestinationGround' 'InstantiateRestoredGround' 'ImportedPrefabLifecycle::Prepare'
     $awake = $plugin.Methods | Where-Object Name -eq 'Awake'
     $installed = @($awake.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.TypeReference] } | ForEach-Object { $_.Operand.Name })
     foreach ($required in @('StructureReleasedPoolSavePatch', 'StructurePrepareNativeSavePatch', 'StructureRestoredGroundPatch', 'PlayerBuildableSleepPatch', 'PlayerBuildablePickupPatch')) {

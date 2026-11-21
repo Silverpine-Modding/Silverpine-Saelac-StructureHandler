@@ -444,23 +444,36 @@ internal static class StructureTransfer
         var destinationGround = DestinationGround.Capture(file, originals);
         var cellsWithoutTerrain = DestinationSupportPolicy.GetUnreplacedCells(file,
             occupied.Select(cell => (cell.x, cell.y)),
-            (x, y) => (Mathf.RoundToInt(x), Mathf.RoundToInt(y)));
+            (x, y) => (Mathf.RoundToInt(x), Mathf.RoundToInt(y)), StructureEditorUI.GetPlacementSlot);
         // Editor-created furniture (including wells) may have no terrain in
         // its JSON. Snapshot the actual destination layers before clearing them;
         // never invent grass or carry trees/plants along with the ground.
         var incomingSlots = new HashSet<(int, int, PlacementSlot)>();
+        var exitNames = replacingPrefabs.Where(name =>
+            Plugin.ResolvePrefab(name)?.GetComponent<WorldTileChanger>() != null).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var replacingExits = new HashSet<Vector2Int>();
         foreach (var item in file.supportingTerrain)
+        {
+            if (exitNames.Contains(item.prefabName)) replacingExits.Add(new Vector2Int(item.x, item.y));
             incomingSlots.Add((item.x, item.y, StructureEditorUI.GetPlacementSlot(item.prefabName)));
+        }
         foreach (var item in file.objects)
+        {
+            if (exitNames.Contains(item.prefabName)) replacingExits.Add(Vector2Int.RoundToInt(new Vector2(item.x, item.y)));
             foreach (var cell in StructureEditorUI.GetObjectCells(item))
                 incomingSlots.Add((cell.x, cell.y, StructureEditorUI.GetPlacementSlot(item.prefabName)));
+        }
         var destinationSupport = CreateObjectRecords(originals.Where(item =>
         {
-            if (!IsTerrainObject(item)) return false;
             var cell = item.transform.GetVector2IntPosition();
+            if (!cellsWithoutTerrain.Contains((cell.x, cell.y))) return false;
             PlacementSlot slot = StructureEditorUI.GetPlacementSlot(SerializationManager.GetPrefabName(item));
-            return cellsWithoutTerrain.Contains((cell.x, cell.y)) &&
-                (slot == PlacementSlot.None || !incomingSlots.Contains((cell.x, cell.y, slot)));
+            // Carry actual ground (even non-prefixed mod floors) and retained
+            // water. Do not carry an old grass edge as ground on reimport.
+            if (slot != PlacementSlot.Ground && slot != PlacementSlot.WaterOverlay)
+                return item.GetComponent<WorldTileChanger>() != null &&
+                    !replacingExits.Contains(cell);
+            return slot == PlacementSlot.Ground || !incomingSlots.Contains((cell.x, cell.y, slot));
         }));
         // A water overlay alone carries the destination floor, not a second
         // water overlay. Never introduce a duplicate via carried support either.
@@ -719,6 +732,12 @@ internal static class StructureTransfer
     private static List<GameObject> FindPlayerStructures()
     {
         return GetActiveSerializableObjects()
+            // A separately placed edging can have neither native serialization
+            // nor a turf registration. Bounded re-export should include our
+            // tracked instance, not the transient children spawned by grass.
+            .Concat(HasCompleteExportBounds
+                ? UnityEngine.Object.FindObjectsOfType<StructureSupplementalInstance>().Select(marker => marker.gameObject)
+                : Enumerable.Empty<GameObject>())
             .Where(gameObject =>
                 gameObject != null &&
                 gameObject.activeInHierarchy &&
@@ -1422,8 +1441,8 @@ internal static class StructureTransfer
     {
         if (gameObject == null) return false;
         string prefabName = SerializationManager.GetPrefabName(gameObject);
-        return prefabName.StartsWith(
-                   "prefab_tile_", StringComparison.OrdinalIgnoreCase) &&
+        return (StructurePlacementPolicy.IsTerrainRecordName(prefabName) ||
+                gameObject.GetComponent<GrassTileHandler>() != null) &&
                gameObject.GetComponent<Door>() == null;
     }
 

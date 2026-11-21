@@ -1428,5 +1428,51 @@ Test("Queued structure partitioning retains native furniture collision records",
     Check(queued.components.Single().dataBase64 == "AQ==");
 });
 PrefabLifecycleChecks.Run(Test, Check);
+Test("East 9: queued import carries all nine destination floors including the felled tree cell", () =>
+{
+    var cells = new[] { (86,40), (86,39), (86,38), (89,40), (90,40), (91,40), (92,40), (93,35), (93,34) };
+    var file = new StructureFile { supportingTerrain = cells.Select(p => new SupportingTerrain
+        { x = p.Item1, y = p.Item2, prefabName = "prefab_tile_grass_overgrowth" }).ToList(),
+        objects = new() { new() { x = 91, y = 40, prefabName = "prefab_nature_felledtree" } } };
+    var part = StructurePlans.Partition(file, TileOf)[(1, 0)];
+    Check(DestinationSupportPolicy.GetUnreplacedCells(part, cells, CellOf).SetEquals(cells));
+    part.supportingTerrain.Add(new() { x = 91, y = 40, prefabName = "prefab_tile_dirt_dry" });
+    Check(StructurePlacementPolicy.FindConflict(part) == null);
+    Check(DestinationSupportPolicy.GetUnreplacedCells(part, cells, CellOf).SetEquals(cells.Where(p => p != (91,40))));
+});
+foreach (string name in new[] { "prefab_tile_grass_overgrowth", "prefab_tile_grass_overgrowth_swamp",
+    "prefab_tile_resin_overgrowth", "prefab_tile_terrainconstruction_interior_snowy_grass_overgrowth",
+    "prefab_tile_grass_overgrowth (3)", "prefab_tile_map_forest" })
+    Test("Decorative records preserve explicit or destination ground: " + name, () =>
+    {
+        var file = new StructureFile { objects = new() { new() { prefabName = name } } };
+        Check(DestinationSupportPolicy.GetUnreplacedCells(file, new[] { (0,0) }, CellOf).Contains((0,0)));
+        file.supportingTerrain.Add(new() { prefabName = "prefab_tile_rock_overgrown (3)" });
+        Check(StructurePlacementPolicy.FindConflict(file) == null);
+        Check(StructurePlacementPolicy.ReplaceSlot(file, name, new[] { (0,0) }) == 0 && file.supportingTerrain.Count == 1);
+    });
+foreach (string name in new[] { "prefab_tile_icy_slip", "prefab_tile_terrainconstruction_overlay_water_bathhouse",
+    "terrainconstruction_snowy_prefab_tile_water_shallow", "prefab_tile_terrainconstruction_interior_icy_slip",
+    "prefab_tile_terrainconstruction_interior_snowy_water_shallow_swamp" })
+    Test("Transparent water or ice keeps its base: " + name, () =>
+    {
+        Check(StructurePlacementPolicy.IsTerrainRecordName(name));
+        Check(StructurePlacementPolicy.Slot(name) == PlacementSlot.WaterOverlay);
+        var file = new StructureFile { supportingTerrain = new() { new() { prefabName = name } } };
+        Check(DestinationSupportPolicy.GetUnreplacedCells(file, new[] { (0,0) }, CellOf).Contains((0,0)));
+        file.objects.Add(new() { prefabName = "terrainconstruction_snowy_prefab_tile_grass" });
+        Check(StructurePlacementPolicy.FindConflict(file) == null);
+        Check(DestinationSupportPolicy.GetUnreplacedCells(file, new[] { (0,0) }, CellOf).Count == 0);
+    });
+Test("Custom prefab metadata governs support in both JSON lists; edging or water cannot become restoration history", () =>
+{
+    PlacementSlot Classify(string name) => name == "mod_floor" ? PlacementSlot.Ground :
+        name == "prefab_tile_custom_prop" ? PlacementSlot.None : StructurePlacementPolicy.Slot(name);
+    var file = new StructureFile { objects = new() { new() { prefabName = "mod_floor" } },
+        supportingTerrain = new() { new() { x = 1, prefabName = "prefab_tile_custom_prop" } } };
+    Check(DestinationSupportPolicy.GetUnreplacedCells(file, new[] { (0,0), (1,0) }, CellOf, Classify).SetEquals(new[] { (1,0) }));
+    Check(DestinationGroundPolicy.Choose(new[] { ("prefab_tile_wood", true, (string?)"prefab_tile_grass_overgrowth", 1f),
+        ("prefab_tile_water_bathhouse", false, (string?)null, 0f), ("mod_floor", false, (string?)null, 2f) }, Classify) == "mod_floor");
+});
 PreviewAssetChecks.Run(Test, Check);
 Console.WriteLine($"{passed} regression tests passed.");

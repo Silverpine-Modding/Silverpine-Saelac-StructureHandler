@@ -58,9 +58,14 @@ internal sealed partial class StructureEditorUI
         GameObject? prefab = Plugin.ResolvePrefab(name);
         if (prefab != null)
         {
+            // Native ground registers a turf. A tile-prefixed sprite/utility
+            // with no registrar is not evidence that it supplies a floor.
+            if (result.Slot == PlacementSlot.Ground && prefab.GetComponent<TurfRegistrar>() == null)
+                result.Slot = PlacementSlot.None;
             if (prefab.GetComponent<GrassTileHandler>() != null) result.Slot = PlacementSlot.Ground;
             if (prefab.GetComponent<BathhouseSanityRegenerator>() != null) result.Slot = PlacementSlot.WaterOverlay;
-            if (prefab.GetComponent<TileMapWallHandler>() != null && result.Slot == PlacementSlot.None)
+            if (prefab.GetComponent<TileMapWallHandler>() != null && prefab.GetComponent<GrassTileHandler>() == null &&
+                result.Slot != PlacementSlot.WaterOverlay)
                 result.Slot = PlacementSlot.Wall;
             var pickup = prefab.GetComponent<Pickupable>();
             result.Pickup = pickup != null;
@@ -79,7 +84,7 @@ internal sealed partial class StructureEditorUI
                 result.Colliders.Add((Vector2Int.RoundToInt(collider.transform.position - prefab.transform.position),
                     collider.transform == prefab.transform, collider.passable));
         }
-        placementProfiles[name] = result;
+        if (prefab != null) placementProfiles[name] = result;
         return result;
     }
 

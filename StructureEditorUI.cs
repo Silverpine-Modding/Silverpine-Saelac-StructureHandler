@@ -1790,8 +1790,7 @@ internal sealed partial class StructureEditorUI :
 
     private static bool IsQuickPlaceSupportingTerrain(string prefabName)
     {
-        return prefabName.StartsWith(
-            "prefab_tile_", StringComparison.OrdinalIgnoreCase);
+        return StructurePlacementPolicy.IsTerrainRecordName(prefabName);
     }
 
     private static int GetQuickPlaceCategory(string prefabName)

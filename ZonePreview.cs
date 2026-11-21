@@ -11,7 +11,7 @@ internal static class ZonePreview
         var floorCells = new HashSet<(int, int)>();
         void Add(string prefab, int x, int y, bool hasZone, string zone)
         {
-            if (!prefab.StartsWith("prefab_tile_", StringComparison.OrdinalIgnoreCase) ||
+            if (!StructurePlacementPolicy.IsTerrainRecordName(prefab) ||
                 !hasZone || string.IsNullOrWhiteSpace(zone)) return;
             var cell = (x, y);
             bool ground = StructurePlacementPolicy.Slot(prefab) == PlacementSlot.Ground;

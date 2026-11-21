@@ -9,14 +9,52 @@ internal enum PlacementSlot { None, Ground, Wall, WaterOverlay }
 
 internal static class StructurePlacementPolicy
 {
+    private const string Tile = "prefab_tile_";
+    private const string Snowy = "terrainconstruction_snowy_";
+    private const string Interior = Tile + "terrainconstruction_interior_";
+    private const string Overlay = Tile + "terrainconstruction_overlay_";
+
+    internal static bool IsTerrainRecordName(string name) =>
+        name.StartsWith(Tile, StringComparison.OrdinalIgnoreCase) ||
+        name.StartsWith(Snowy + Tile, StringComparison.OrdinalIgnoreCase);
+
+    // Normalize only for classification. Keep the actual prefab ID for
+    // instantiation/serialization, including Unity's numbered asset copies.
+    private static string NativeSurfaceName(string name)
+    {
+        if (name.EndsWith(")", StringComparison.Ordinal))
+        {
+            int suffix = name.LastIndexOf(" (", StringComparison.Ordinal);
+            if (suffix > 0 && int.TryParse(name.Substring(suffix + 2, name.Length - suffix - 3),
+                System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out _))
+                name = name.Substring(0, suffix);
+        }
+        if (name.StartsWith(Snowy + Tile, StringComparison.OrdinalIgnoreCase)) return name.Substring(Snowy.Length);
+        if (name.StartsWith(Overlay, StringComparison.OrdinalIgnoreCase)) return Tile + name.Substring(Overlay.Length);
+        if (name.StartsWith(Interior, StringComparison.OrdinalIgnoreCase))
+        {
+            string suffix = name.Substring(Interior.Length);
+            return Tile + (suffix.StartsWith("snowy_", StringComparison.OrdinalIgnoreCase) ? suffix.Substring(6) : suffix);
+        }
+        return name;
+    }
+
     internal static PlacementSlot Slot(string name)
     {
+        name = NativeSurfaceName(name);
+        // These are directional sprite decorations spawned by OvergrowthTile
+        // on a neighbor. Several edges can meet there; none supplies a floor.
+        if (name.Equals(Tile + "grass_overgrowth", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals(Tile + "grass_overgrowth_swamp", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals(Tile + "resin_overgrowth", StringComparison.OrdinalIgnoreCase) ||
+            name.StartsWith(Tile + "map_", StringComparison.OrdinalIgnoreCase)) return PlacementSlot.None;
         // These native translucent surfaces reveal the floor/terrain beneath
         // them. Share one overlay slot so water cannot stack on other water
         // overlays, without erasing the underlying ground or its zone.
         if (name.Equals("prefab_tile_water_bathhouse", StringComparison.OrdinalIgnoreCase) ||
             name.Equals("prefab_tile_water_shallow", StringComparison.OrdinalIgnoreCase) ||
-            name.Equals("prefab_tile_water_shallow_swamp", StringComparison.OrdinalIgnoreCase))
+            name.Equals("prefab_tile_water_shallow_swamp", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("prefab_tile_icy_slip", StringComparison.OrdinalIgnoreCase))
             return PlacementSlot.WaterOverlay;
         if (name.StartsWith("prefab_wall_", StringComparison.OrdinalIgnoreCase)) return PlacementSlot.Wall;
         // Transition/trigger tiles are utilities, not the cell's ground surface.

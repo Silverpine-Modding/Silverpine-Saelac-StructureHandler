@@ -7,13 +7,17 @@ namespace StructureHandler;
 
 internal static class DestinationGroundPolicy
 {
-    internal static string? Choose(IEnumerable<(string Prefab, bool Constructed, string? Previous, float Z)> candidates)
+    internal static string? Choose(IEnumerable<(string Prefab, bool Constructed, string? Previous, float Z)> candidates,
+        Func<string, PlacementSlot>? classify = null)
     {
-        var ordered = candidates.OrderBy(c => c.Z).ThenBy(c => c.Prefab, StringComparer.OrdinalIgnoreCase).ToArray();
+        classify ??= StructurePlacementPolicy.Slot;
+        var ordered = candidates.Where(c => classify(c.Prefab) == PlacementSlot.Ground)
+            .OrderBy(c => c.Z).ThenBy(c => c.Prefab, StringComparer.OrdinalIgnoreCase).ToArray();
         // Native construction inherits the old floor's underlying ground, not
         // the old floor itself. Reimports must not create a floor resurrection chain.
         foreach (var item in ordered)
-            if (item.Constructed && !string.IsNullOrWhiteSpace(item.Previous)) return item.Previous;
+            if (item.Constructed && !string.IsNullOrWhiteSpace(item.Previous) &&
+                classify(item.Previous!) == PlacementSlot.Ground) return item.Previous;
         foreach (var item in ordered)
             if (!item.Constructed && !string.IsNullOrWhiteSpace(item.Prefab)) return item.Prefab;
         return null;

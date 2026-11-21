@@ -1,21 +1,35 @@
-# Structure Handler 1.2.28
+# Structure Handler 1.2.29
 
 Created by **Saelac and ChatGPT**.
 
-This update adds editor preview recovery and diagnostics, retaining the selection
-and text-input fixes from 1.2.27 and earlier.
+This update preserves the destination terrain under decorative edges and
+transparent ice, including on queued imports.
 
 ## Requirements and installation
 
 - Silverpine 1.7.3 and BepInEx 5.
 - **[ModdingTools 1.12.0 or newer](https://github.com/Silverpine-Modding/Silverpine-Saelac-Modding-Tools/releases)** must be installed separately. This requirement is enforced by the plugin.
-- Close the game. Extract `StructureHandler-1.2.28.zip` into
+- Close the game. Extract `StructureHandler-1.2.29.zip` into
   `BepInEx/plugins/StructureHandler/`, replacing the previous DLL, or replace
   that DLL with the standalone download. Do not keep a second copy elsewhere
   under `BepInEx/plugins`.
 - Back up your saves and structure JSONs before updating. Keep each save's
   `.sav.moddingtools` companion alongside its `.sav` file when copying or
   restoring saves. This download does not contain or update ModdingTools.
+
+## New in 1.2.29
+
+- Do not remove the floor beneath overgrowth or the props standing on it.
+  Grass, swamp-grass and resin edges are decorations; slippery ice is an
+  overlay. Opaque ground, including overgrown rock, still replaces the floor.
+- Use the same terrain classification in the editor and importer for native
+  tiles and Terrain Construction variants. Repeated imports replace standalone
+  decoration instances rather than accumulating them.
+- Preserve independently imported edging on bounded export. Exclude decorations
+  when capturing the ground to restore on floor deconstruction; activate
+  registered mod ground according to its registration when restoring it.
+- No structure JSON or save migration is required. This prevents new holes;
+  it cannot infer the original terrain in a previously saved void.
 
 ## New in 1.2.28
 
