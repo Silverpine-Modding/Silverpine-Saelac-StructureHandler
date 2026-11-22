@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\..\StructureModels.cs" Link="StructureModels.cs" />
+    <Compile Include="..\..\SavedComponentBinding.cs" Link="SavedComponentBinding.cs" />
     <Compile Include="..\..\EditorDocumentHistory.cs" Link="EditorDocumentHistory.cs" />
     <Compile Include="..\..\EditorSpatialIndex.cs" Link="EditorSpatialIndex.cs" />
     <Compile Include="..\..\EditorWorkQueue.cs" Link="EditorWorkQueue.cs" />

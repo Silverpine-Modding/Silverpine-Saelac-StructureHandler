@@ -47,6 +47,12 @@ internal static class StructureReleasedPoolSavePatch
 {
     private static readonly FieldInfo FreePools = AccessTools.Field(typeof(ObjectPool), "freePools");
 
+    internal static bool IsAlreadyReleased(GameObject item)
+    {
+        var pools = (Dictionary<GameObject, Stack<GameObject>>)FreePools.GetValue(null);
+        return pools.Values.Any(stack => stack.Contains(item));
+    }
+
     [HarmonyPriority(Priority.Last)]
     private static void Postfix(HashSet<GameObject> __result)
     {
@@ -94,7 +100,7 @@ internal static class StructureRestoredGroundPatch
 [HarmonyPatch(typeof(DungeonGenerationManager), nameof(DungeonGenerationManager.EnterWorldTile))]
 internal static class StructureTileEnteredPatch
 {
-    private static void Postfix() => StructureSaveState.ScheduleLoadedTile();
+    private static void Postfix() => StructureSaveState.OnTileEntered();
 }
 
 [HarmonyPatch(typeof(WorldTile), nameof(WorldTile.TryLoadFromMemory))]
@@ -110,6 +116,7 @@ internal static class StructureTileUnloadPatch
     {
         __state = StructureSaveState.Unloading;
         StructureSaveState.Unloading = true;
+        StructureSaveState.RefreshAppearancePositions();
         StructureTerrainPersistence.BeforeUnload(__instance.position);
     }
     private static Exception? Finalizer(bool __state, Exception? __exception)
@@ -145,6 +152,13 @@ internal static class StructurePoolReleasePatch
         __0?.GetComponent<StructureSupplementalInstance>()?.ReleasePooledState();
         __0?.GetComponent<StructureInstanceState>()?.ReleasePooledState();
     }
+}
+
+[HarmonyPatch(typeof(TurfRegistrar), "OnDestroy")]
+internal static class ReleasedTurfCleanupPatch
+{
+    private static bool Prefix(TurfRegistrar __instance, bool ___registered) =>
+        TurfRegistrationLifecycle.ShouldRunDestroy(__instance, ___registered);
 }
 
 [HarmonyPatch(typeof(WorldTile), nameof(WorldTile.ClearSerializedBlob))]

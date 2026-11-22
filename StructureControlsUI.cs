@@ -18,15 +18,15 @@ using UnityEngine.UI;
 
 namespace StructureHandler;
 
-[HarmonyPatch(typeof(SettingsUI), "Start")]
+[HarmonyPatch(typeof(ShedPlotOwnerManager), "Awake")]
 internal static class BaseShedCapturePatch
 {
     [HarmonyPostfix]
-    private static void CaptureUntouchedBaseShed()
+    private static void CaptureUntouchedBaseShed(Plot ___shedPlot)
     {
-        // Settings and plots have initialized by this point, while no save
-        // needs to have been selected yet.
-        StructureTransfer.CaptureBaseShed();
+        // The serialized plot reference and scene objects exist before Start,
+        // native save deserialization and any player building/menu interaction.
+        StructureTransfer.CaptureBaseShed(___shedPlot);
     }
 }
 
@@ -54,7 +54,6 @@ internal sealed partial class StructureControlsUI :
         instance.AttachSession(session);
         instance.open = true;
         instance.Build(inventory);
-        StructureTransfer.CaptureBaseShed();
     }
 
     private void Update()
@@ -94,6 +93,7 @@ internal sealed partial class StructureControlsUI :
         });
         AddButton(template, RegenerationLabel(), () =>
         {
+            if (StructureSaveState.EditBlockReason is string blocked) { UpperNotificationUI.Instance?.OneOff(blocked); return; }
             if (!Plugin.TryGetPlayerWorldTile(out Vector2Int worldTile))
             {
                 UpperNotificationUI.Instance.OneOff(
@@ -111,6 +111,7 @@ internal sealed partial class StructureControlsUI :
         });
         AddButton(template, PlayerBuildableLabel(), () =>
         {
+            if (StructureSaveState.EditBlockReason is string blocked) { UpperNotificationUI.Instance?.OneOff(blocked); return; }
             if (!Plugin.TryGetPlayerWorldTile(out Vector2Int worldTile))
             {
                 UpperNotificationUI.Instance.OneOff(

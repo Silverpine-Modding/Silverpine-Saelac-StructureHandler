@@ -6,6 +6,43 @@ using System.IO;
 
 namespace StructureHandler;
 
+// Ephemeral save-switch undo, deliberately separate from the persisted ledger.
+// Only scenery in a native persistence zone survives a world-tile transition.
+internal sealed class SuppressedSceneOriginals<TScene>
+{
+    private readonly Dictionary<string, (StructureObject Record, TScene Scene)> entries = new(StringComparer.OrdinalIgnoreCase);
+    internal sealed class Batch
+    {
+        private readonly SuppressedSceneOriginals<TScene> owner;
+        private readonly Dictionary<string, (StructureObject Record, TScene Scene)> pending = new(StringComparer.OrdinalIgnoreCase);
+        internal Batch(SuppressedSceneOriginals<TScene> owner) { this.owner = owner; }
+        internal void Remember(string key, bool resident, TScene scene, Func<StructureObject> snapshot)
+        {
+            if (resident && !owner.entries.ContainsKey(key) && !pending.ContainsKey(key))
+                pending.Add(key, (snapshot(), scene));
+        }
+        internal void Commit()
+        {
+            foreach (var pair in pending) owner.entries.TryAdd(pair.Key, pair.Value);
+            pending.Clear();
+        }
+    }
+    internal Batch Begin() => new(this);
+    internal void ClearTile(Func<StructureObject, bool> belongs)
+    {
+        var remove = new List<string>();
+        foreach (var pair in entries) if (belongs(pair.Value.Record)) remove.Add(pair.Key);
+        foreach (string key in remove) entries.Remove(key);
+    }
+    internal IEnumerable<(StructureObject Record, TScene Scene)> Restorable(
+        Func<TScene, bool> loaded, Func<StructureObject, bool> resident)
+    {
+        foreach (var original in entries.Values)
+            if (loaded(original.Scene) && resident(original.Record)) yield return original;
+    }
+    internal void Clear() => entries.Clear();
+}
+
 // No Unity state: the companion stores only scenery the native serializer
 // misses, never historical copies of chests, furniture, crops, or NPCs.
 internal sealed class StructurePersistenceLedger
@@ -59,10 +96,31 @@ internal sealed class StructurePersistenceLedger
         foreach (var item in created) Objects[Key(item)] = item;
     }
 
-    internal void Move(string previousKey, StructureObject current)
+    internal static void MoveAppearanceRecords(Dictionary<string, StructureAppearance> records,
+        IReadOnlyList<(StructureAppearance Data, float X, float Y, float Z)> moves)
     {
-        Objects.Remove(previousKey);
-        Objects[Key(current)] = current;
+        if (moves.Count == 0) return;
+        var ownedMoves = new List<(StructureAppearance Data, float X, float Y, float Z)>(moves.Count);
+        foreach (var move in moves)
+            if (ForgetOwnedAppearance(records, move.Data)) ownedMoves.Add(move);
+        foreach (var move in ownedMoves)
+        {
+            var data = move.Data;
+            data.x = move.X; data.y = move.Y; data.z = move.Z;
+            records[Key(data.prefabName, data.x, data.y, data.z)] = data;
+        }
+    }
+
+    internal static bool ForgetOwnedAppearance(Dictionary<string,StructureAppearance> records, StructureAppearance data)
+    {
+        string key = Key(data.prefabName, data.x, data.y, data.z);
+        return records.TryGetValue(key, out var owner) && ReferenceEquals(owner, data) && records.Remove(key);
+    }
+
+    internal void ReplaceTracked(IEnumerable<string> oldKeys, IEnumerable<StructureObject> records)
+    {
+        foreach (string key in oldKeys) Objects.Remove(key);
+        foreach (var record in records) Objects[Key(record)] = record;
     }
 
     internal void ClearWhere(Func<StructureObject, bool> belongsToTile)

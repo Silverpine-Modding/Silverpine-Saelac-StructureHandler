@@ -40,6 +40,105 @@ try {
         $assembly.Name.Version.ToString(3) -ne $projectVersion) { throw 'Plugin, assembly and project versions disagree.' }
     'PASS BepInEx startup identity, compiled assembly and project version agree.'
     Assert-MethodCalls 'Plugin' 'Awake' 'MarketCrates::Install'
+    Assert-MethodCalls 'Plugin' 'GetWorldTile' 'StructurePlans::TileOf'
+    Assert-MethodCalls 'PreparedWorldState' '.ctor' 'StructurePlans::RehomePending'
+    Assert-MethodCalls 'StructureSaveState' 'Restore' 'PreparedWorldState::.ctor'
+    Assert-MethodCalls 'StructureTileUnloadPatch' 'Prefix' 'StructureSaveState::RefreshAppearancePositions'
+    Assert-MethodCalls 'StructureSaveState' 'Reset' 'StructureInstanceState::ReleasePooledState'
+    Assert-MethodCalls 'StructureTransfer' 'ResolveConflict' 'StructureSaveState::get_SaveEpoch'
+    Assert-MethodCalls 'StructureTileEnteredPatch' 'Postfix' 'StructureSaveState::OnTileEntered'
+    Assert-MethodCalls 'StructureSaveState' 'RestoreSavedPayload' 'StructureSaveState::Restore'
+    Assert-MethodCalls 'StructureTransfer' 'ImportAll' 'StructureSaveState::get_EditBlockReason'
+    Assert-MethodCalls 'StructureSaveState' 'RestoreAfterRollback' 'MarketCrates::Reconcile'
+    Assert-MethodCalls 'StructureInstanceState' 'ReleasePooledState' 'StructureInstanceState::RestoreNativeSprite'
+    Assert-MethodCalls 'StructureSaveState' 'Forget' 'StructurePersistenceLedger::ForgetOwnedAppearance'
+    Assert-MethodCalls 'StructureTransfer' 'ApplyLoadedImport' 'StructureTerrainPersistence::StageOriginals'
+    Assert-MethodCalls 'StructureTerrainPersistence' 'RestoreLoaded' 'StructureTerrainPersistence::StageOriginals'
+    'PASS Save load stages companion data, tile unload captures moved appearances, and rollback rebinds the live market.'
+    Assert-MethodCalls 'StructureTransfer' 'ReadFile' 'StructurePlacementPolicy::ValidateDocumentGeometry'
+    Assert-MethodCalls 'StructureTransfer' 'ValidateImportFiles' 'StructurePlacementPolicy::ValidateDocumentGeometry'
+    Assert-MethodCalls 'StructureEditorUI' 'Save' 'StructurePlacementPolicy::ValidateDocumentGeometry'
+    Assert-MethodCalls 'StructurePlacementPolicy' 'ValidateDocumentGeometry' 'StructurePlacementPolicy::ValidateFootprint'
+    Assert-MethodCalls 'StructureTransfer' 'ApplyLoadedImport' 'StructurePlans::RequireSectionOwner'
+    Assert-MethodCalls 'StructureSaveState' 'ProcessLoadedTile' 'StructureSaveState::PromptBoundaryChoice'
+    Assert-MethodCalls 'StructureTerrainPersistence' 'RefreshLive' 'StructurePersistenceLedger::ReplaceTracked'
+    Assert-MethodCalls 'StructureSaveState' 'Capture' 'StructureSaveState::RefreshAppearancePositions'
+    Assert-MethodCalls 'StructureSaveState' 'PrepareNativeSave' 'StructureSaveState::RefreshAppearancePositions'
+    Assert-MethodCalls 'StructureSaveState' 'TrackAppearance' 'StructureInstanceState::ReleasePooledState'
+    Assert-MethodCalls 'StructureInstanceState' 'Apply' 'StructureInstanceState::RemoveAddedExtender'
+    Assert-MethodCalls 'StructureInstanceState' 'ReleasePooledState' 'StructureInstanceState::RemoveAddedExtender'
+    $editor = $assembly.MainModule.Types | Where-Object FullName -eq 'StructureHandler.StructureEditorUI'
+    $footprintOps = ($editor.Methods | Where-Object Name -eq 'BuildPrefabOccupiedOffsets').Body.Instructions
+    $getBounds = @($footprintOps | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and
+        $_.Operand.Name -eq 'get_bounds' -and $_.Operand.DeclaringType.Name -eq 'Sprite' })
+    if ($getBounds.Count -ne 1 -or !($footprintOps | Where-Object { $_.Offset -lt $getBounds[0].Offset -and
+        $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'op_Equality' })) {
+        throw 'An unassigned rotation sprite must not be dereferenced while finding placement bounds.'
+    }
+    foreach ($methodName in @('Save','CreateBlankStructure')) {
+        $ins = ($editor.Methods | Where-Object Name -eq $methodName).Body.Instructions
+        $write = @($ins | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and
+            $_.Operand.DeclaringType.Name -eq 'StructureJsonFile' -and $_.Operand.Name -eq 'Write' })
+        $metadata = @($ins | Where-Object { $_.OpCode.Name -eq 'stfld' -and
+            $_.Operand.Name -in @('structure','currentPath','dirty','occupiedPositions') -and
+            ($_.Operand.DeclaringType.Name -eq 'StructureEditorUI' -or $methodName -eq 'Save') })
+        if ($write.Count -ne 1 -or !$metadata.Count -or $write[0].Offset -ge $metadata[0].Offset) {
+            throw "$methodName changes the open document before committing its disk write."
+        }
+    }
+    'PASS Editor writes commit before live metadata changes; both furniture override paths release the owned extender.'
+    Assert-MethodCalls 'StructureEditorUI' 'ReadEditableFile' 'StructureJsonFile::Read'
+    Assert-MethodCalls 'StructureEditorUI' 'Save' 'StructureFile::WithSaveHeader'
+    $save = ($editor.Methods | Where-Object Name -eq 'Save').Body.Instructions
+    if ($save | Where-Object { $_.OpCode.Name -eq 'stfld' -and $_.Operand.DeclaringType.Name -eq 'StructureFile' }) {
+        throw 'Saving must not edit the live undo document to change its file header.'
+    }
+    foreach ($method in @('Load','CombineCheckedFiles','CreateBlankStructure','Close','OnFrameworkSessionClosed')) {
+        Assert-MethodCalls 'StructureEditorUI' $method 'StructureEditorUI::ResetDocumentTools'
+    }
+    Assert-MethodCalls 'StructureEditorUI' 'HandlePreviewInput' 'EditorPreviewGesture::Owns'
+    Assert-MethodCalls 'StructureEditorUI' 'OnGUI' 'StructureEditorUI::EndLeftPreviewStroke'
+    'PASS Editor disk revisions, save-only headers, and document-scoped brush ownership are wired into the production UI.'
+    Assert-MethodCalls 'StructureEditorUI' 'GetObjectCells' 'StructurePlacementPolicy::Cells'
+    Assert-MethodCalls 'StructureTransfer' 'Export' 'StructurePlacementPolicy::RequireInsideExportBounds'
+    Assert-MethodCalls 'TerrainRepair' 'Inspect' 'StructurePlacementPolicy::IsTerrainRecordName'
+    Assert-MethodCalls 'StructureTerrainPersistence' 'ClearTile' 'SuppressedSceneOriginals.*::ClearTile'
+    Assert-MethodCalls 'StructureTerrainPersistence' 'Reset' 'SuppressedSceneOriginals.*::Restorable'
+    Assert-MethodCalls 'StructureTerrainPersistence' 'Reset' 'FindObjectsOfType<UnityEngine.Transform>'
+    foreach ($who in @('StructureTransfer','StructureTerrainPersistence')) {
+        $operation = if ($who -eq 'StructureTransfer') { 'ApplyLoadedImport' } else { 'RestoreLoaded' }
+        $type = $assembly.MainModule.Types | Where-Object Name -eq $who
+        $method = $type.Methods | Where-Object Name -eq $operation
+        $handler = @($method.Body.ExceptionHandlers | Where-Object { $_.CatchType.FullName -eq 'StructureHandler.ImportRecoveryException' })
+        if ($handler.Count -ne 1 -or !($method.Body.Instructions | Where-Object {
+            $_.Offset -ge $handler[0].HandlerStart.Offset -and $_.Offset -lt $handler[0].HandlerEnd.Offset -and
+            $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'Commit'
+        })) { throw "$operation did not retain original scenery for a genuinely incomplete rollback." }
+    }
+    Assert-MethodCalls 'BaseShedCapturePatch' 'CaptureUntouchedBaseShed' 'StructureTransfer::CaptureBaseShed'
+    $modTypes = $assembly.MainModule.Types
+    $captureUsers = @($modTypes.Methods | Where-Object { $_.HasBody -and ($_.Body.Instructions | Where-Object {
+        $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'CaptureBaseShed'
+    }) })
+    if ($captureUsers.Count -ne 1 -or $captureUsers[0].DeclaringType.Name -ne 'BaseShedCapturePatch') {
+        throw 'The shed baseline may only be captured by the native startup patch.'
+    }
+    Assert-MethodCalls 'StructureEditorUI' 'CombineCheckedFiles' 'EditorRecordMerge::Objects'
+    Assert-MethodCalls 'StructureEditorUI' 'CombineCheckedFiles' 'EditorRecordMerge::Terrain'
+    'PASS World boundaries, save-switch scope, bounded export, startup shed snapshot, conservative repair and full-record editor merge are wired.'
+    Assert-MethodCalls 'ReleasedTurfCleanupPatch' 'Prefix' 'TurfRegistrationLifecycle::ShouldRunDestroy'
+    Assert-MethodCalls 'TurfRegistrationLifecycle' 'ShouldRunDestroy' 'Turfs::TryGetTurfGameObjects'
+    Assert-MethodCalls 'StructureTransfer' 'RegisterRestoredObjects' 'TurfRegistrationLifecycle::RegisterIfLive'
+    Assert-MethodCalls 'ResourceRegeneration' 'ProcessLoadedTile' 'ImportedPrefabLifecycle::Prepare'
+    Assert-MethodCalls 'ResourceRegeneration' 'ProcessLoadedTile' 'StructureTransfer::DiscardCreatedObjects'
+    Assert-MethodCalls 'StructureTransfer' 'ApplyLoadedImport' 'StructureTransfer::RequestDarknessRefresh'
+    Assert-MethodCalls 'StructureTransfer' 'RequestDarknessRefresh' 'FrameworkDiagnostics::Report'
+    Assert-MethodCalls 'Plugin' 'Awake' 'KitsuneInscription::Install'
+    Assert-MethodCalls 'KitsuneInscription' 'WriteComponent' 'ISerializableMonoBehavior::Serialize'
+    Assert-MethodCalls 'KitsuneInscription' 'ReadComponent' 'ISerializableMonoBehavior::Deserialize'
+    Assert-MethodCalls 'KitsuneInscription' 'WriteComponent' 'KitsuneInscriptionPayload::Append'
+    Assert-MethodCalls 'KitsuneInscription' 'ReadComponent' 'KitsuneInscriptionPayload::Read'
+    'PASS Kitsune inscriptions extend native component records, preserving the original serialization calls.'
     foreach ($method in @('Reset','Capture','Restore')) {
         Assert-MethodCalls 'StructureSaveState' $method ('MarketCrates::' + $method)
     }
@@ -301,6 +400,21 @@ try {
     Assert-MethodCalls 'StructureEditorUI' 'Save' 'StructureEditorUI::PlacementConflict'
     Assert-MethodCalls 'StructureEditorUI' 'MoveToCoordinate' 'StructurePlacementPolicy::FindConflict'
     'PASS Add, paint, move, rotate, duplicate and save paths are wired to placement checks.'
+    foreach ($method in @('ChangeObjectPlacement','ChangeObjectPrefab')) {
+        Assert-MethodCalls 'StructureEditorUI' $method 'StructureObject::PlacementDraft'
+        Assert-MethodCalls 'StructureEditorUI' $method 'StructureEditorUI::CheckPlacement'
+    }
+    foreach ($method in @('PlaceBrushObject','ChangeTerrainPlacement','DrawSelectedTerrain')) {
+        Assert-MethodCalls 'StructureEditorUI' $method 'SupportingTerrain::PlacementDraft'
+    }
+    foreach ($method in @('CheckPlacement','MoveToCoordinate','Save')) {
+        Assert-MethodCalls 'StructureEditorUI' $method 'StructurePlans::OwnerConflictAt'
+    }
+    Assert-MethodCalls 'StructureEditorUI' 'TryEditorPrefab' 'StructureTransfer::ValidateComponentData'
+    Assert-MethodCalls 'StructureEditorUI' 'TryEditorPrefab' 'WorldPrefabPolicy::CannotReconstruct'
+    Assert-MethodCalls 'StructureEditorUI' 'BuildPrefabOccupiedOffsets' 'PrefabFootprint::Box'
+    Assert-MethodCalls 'StructureEditorUI' 'BuildPrefabOccupiedOffsets' 'PrefabFootprint::Sprite'
+    'PASS Placement proposals, editor/import boundary checks, replacement validation, and footprint guards are wired.'
     Assert-MethodCalls 'StructureEditorUI' 'DrawPreviewPanel' 'StructureEditorUI::DrawPlacementRulesToggle'
     Assert-MethodCalls 'StructureEditorUI' 'DrawPlacementRulesToggle' 'GUILayout::Toggle'
     Assert-MethodCalls 'StructureEditorUI' 'ShouldSnap' 'StructurePlacementPolicy::ShouldSnap'
@@ -368,6 +482,32 @@ try {
     Assert-MethodCalls 'StructureTransfer' 'ValidateImportFiles' 'StructureTransfer::ValidatePlacement'
     Assert-MethodCalls 'StructureTransfer' 'ValidatePlacement' 'StructurePlacementPolicy::FindConflict'
     Assert-MethodCalls 'StructureSaveState' 'ProcessLoadedTile' 'StructureTransfer::ValidateImportFiles'
+    $processTile = $saveState.Methods | Where-Object Name -eq 'ProcessLoadedTile'
+    $tileOps = $processTile.Body.Instructions
+    $validate = $tileOps | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'ValidateImportFiles' }
+    $apply = $tileOps | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'ApplyLoadedImport' }
+    $maintenance = $tileOps | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'RestoreAppearances' }
+    $preflight = $processTile.Body.ExceptionHandlers | Where-Object {
+        $_.HandlerType -eq 'Catch' -and $_.TryStart.Offset -le $validate.Offset -and
+        $_.TryEnd.Offset -gt $validate.Offset -and $_.HandlerEnd.Offset -le $apply.Offset
+    }
+    if (!$preflight -or -not ($tileOps | Where-Object {
+        $_.Offset -ge $preflight.HandlerStart.Offset -and $_.Offset -lt $preflight.HandlerEnd.Offset -and
+        $_.OpCode.Name -like 'leave*' -and $_.Operand.Offset -eq $maintenance.Offset
+    })) { throw 'Queued validation failure must skip apply/removal and resume existing-tile maintenance.' }
+    'PASS Bad queued recipes retain their order without blocking maintenance on entry.'
+    $retryCatch = @($processTile.Body.ExceptionHandlers | Where-Object {
+        $_.CatchType.FullName -eq 'System.IO.InvalidDataException' -and
+        $_.TryStart.Offset -le $apply.Offset -and $_.TryEnd.Offset -gt $apply.Offset
+    })
+    if ($retryCatch.Count -ne 1 -or !($tileOps | Where-Object {
+        $_.Offset -ge $retryCatch[0].HandlerStart.Offset -and $_.Offset -lt $retryCatch[0].HandlerEnd.Offset -and
+        $_.OpCode.Name -like 'leave*' -and $_.Operand.Offset -eq $maintenance.Offset
+    })) { throw 'Recoverable queued apply failure must keep its position and still maintain the existing tile.' }
+    Assert-MethodCalls 'StructureSaveState' 'ProcessLoadedTile' 'StructureSaveState::MarkIncompleteRollback'
+    Assert-MethodCalls 'StructureTransfer' 'ImportAll' 'StructureSaveState::MarkIncompleteRollback'
+    Assert-MethodCalls 'TerrainRepair' 'Apply' 'StructureSaveState::MarkIncompleteRollback'
+    'PASS Incomplete rollback suspends retries; a fully recovered failure still services the existing tile.'
     'PASS Immediate and queued imports validate exclusive slots before mutation; generic reconstruction remains separate.'
     Assert-MethodCalls 'StructureReleasedPoolSavePatch' 'Postfix' 'NativeSavePolicy::RemoveReleased'
     Assert-MethodCalls 'StructureSaveLoadPatch' 'Prefix' 'TerrainRepair::RecordSavePath'
@@ -412,6 +552,13 @@ try {
         throw 'Refresh must clear the mutation guard first and skip untouched imports.'
     }
     Assert-MethodCalls 'StructureTransfer' 'ImportAll' 'StructureTransfer::ApplyLoadedImport'
+    $importOps = ($transfer.Methods | Where-Object Name -eq 'ImportAll').Body.Instructions
+    $localApply = @($importOps | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.Name -eq 'ApplyLoadedImport' })
+    $queueAdd = @($importOps | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and
+        $_.Operand.Name -eq 'Add' -and $_.Operand.DeclaringType.FullName -match 'List.*PendingTileImport' })
+    if ($queueAdd.Count -ne 1 -or $localApply.Count -ne 1 -or $queueAdd[0].Offset -le $localApply[0].Offset) {
+        throw 'A local failure can leave its own distant sections queued.'
+    }
     Assert-MethodCalls 'StructureSaveState' 'ProcessLoadedTile' 'StructureTransfer::ApplyLoadedImport'
     'PASS Immediate and queued imports refresh after their transaction; rollback is covered without refreshing untouched plans.'
     $refreshCatch = @($visualRefresh.Body.ExceptionHandlers | Where-Object {
@@ -476,11 +623,29 @@ try {
         -not ($collectCalls | Where-Object { $_ -match 'HashSet`1<System.String>::Contains' })) {
         throw 'Import replacement does not recognize supplemental objects and matching nonserialized prefabs.'
     }
-    foreach ($excluded in @('NeuralNPC', 'EntityMover', 'IPersistentSerializableMonoBehavior', 'PersistentEntity')) {
-        if (-not ($collectCalls | Where-Object { $_ -match ('GetComponent<' + $excluded + '>') })) {
-            throw "Import replacement lost the $excluded exclusion."
-        }
+    Assert-MethodCalls 'StructureTransfer' 'CollectObjectsAt' 'WorldPrefabPolicy::ProtectedFromRemoval'
+    Assert-MethodCalls 'StructureTransfer' 'CollectVegetationAt' 'WorldPrefabPolicy::ProtectedFromRemoval'
+    Assert-MethodCalls 'StructureTerrainPersistence' 'SafeScenery' 'WorldPrefabPolicy::ProtectedFromRemoval'
+    Assert-MethodCalls 'WorldPrefabPolicy' 'ProtectedFromRemoval' 'WorldPrefabPolicy::CharacterOrSystem'
+    foreach ($excluded in @('NeuralNPC','Player','Enemy','EntityMover','IPersistentSerializableMonoBehavior')) {
+        Assert-MethodCalls 'WorldPrefabPolicy' 'CharacterOrSystem' ('GetComponentInParent<' + $excluded + '>')
     }
+    Assert-MethodCalls 'WorldPrefabPolicy' 'ProtectedFromRemoval' 'GetComponentInParent<PersistentEntity>'
+    Assert-MethodCalls 'WorldPrefabPolicy' 'CannotReconstruct' 'SerializationManager::GetPrefabName'
+    Assert-MethodCalls 'WorldPrefabPolicy' 'CannotReconstruct' 'SerializationManager::GetPrefabFromName'
+    Assert-MethodCalls 'Plugin' 'IndexAssetPrefabs' 'Plugin::IsAssetRoot'
+    Assert-MethodCalls 'Plugin' 'IsAssetRoot' 'Transform::get_parent'
+    Assert-MethodCalls 'StructureTransfer' 'Export' 'StructureTransfer::ValidateImportFiles'
+    Assert-MethodCalls 'StructureTransfer' 'CreateObjectRecords' 'Plugin::PrefabNameOf'
+    Assert-MethodCalls 'StructureTransfer' 'AddTerrainRecord' 'Plugin::PrefabNameOf'
+    Assert-MethodCalls 'StructureTransfer' 'BindComponent' 'SavedComponentBinding::Select'
+    Assert-MethodCalls 'StructureTransfer' 'ValidateComponentData' 'StructureTransfer::BindComponent'
+    Assert-MethodCalls 'StructureTransfer' 'ApplyComponentRecords' 'SavedComponentBinding::FinalWrites'
+    Assert-MethodCalls 'StructureTransfer' 'InstantiateSupportingTerrain' 'ImportedPrefabLifecycle::PrepareForPlacement'
+    Assert-MethodCalls 'StructureTransfer' 'InstantiateSupportingTerrain' 'WorldPrefabPolicy::RequirePlacedInstance'
+    Assert-MethodCalls 'StructureTransfer' 'InstantiateObjectRecords' 'WorldPrefabPolicy::RequirePlacedInstance'
+    Assert-MethodCalls 'StructureTransfer' 'InstantiateObjectRecords' 'ImportedPrefabLifecycle::PrepareForPlacement'
+    'PASS Prefabs must round-trip natively when serialized, use root fallback assets, and bind saved component identities before restore.'
     'PASS Compiled replacement scan includes nonserialized wells and preserves character/persistent exclusions.'
     Assert-MethodCalls 'StructureSaveState' 'Reset' 'ImportFootprint::Reset'
     Assert-MethodCalls 'StructureSaveState' 'TileCleared' 'ImportFootprint::ClearWorldTile'
@@ -543,6 +708,32 @@ try {
     'PASS Native grass edging requires ownership, native components, and the correct child hierarchy in both repair scans.'
     $gameAssembly = [Mono.Cecil.AssemblyDefinition]::ReadAssembly((Join-Path $projectRoot '../../Silverpine_Data/Managed/Assembly-CSharp.dll'))
     try {
+        $nativePool = $gameAssembly.MainModule.Types | Where-Object Name -eq 'ObjectPool'
+        $owners = $nativePool.Fields | Where-Object Name -eq 'claimedMappings'
+        $release = $nativePool.Methods | Where-Object Name -eq 'Release'
+        $releaseCalls = @($release.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] } | ForEach-Object { $_.Operand.Name })
+        $nativeRegistrar = $gameAssembly.MainModule.Types | Where-Object Name -eq 'TurfRegistrar'
+        $flag = $nativeRegistrar.Fields | Where-Object Name -eq 'registered'
+        $onRelease = $nativeRegistrar.Methods | Where-Object Name -eq 'OnObjectPoolDestroy'
+        if ($flag.FieldType.FullName -ne 'System.Boolean' -or !$owners.IsStatic -or
+            $owners.FieldType.FullName -notlike '*Dictionary*<UnityEngine.GameObject,*' -or
+            $releaseCalls.IndexOf('SetActive') -lt 0 -or $releaseCalls.IndexOf('OnObjectPoolDestroy') -le $releaseCalls.IndexOf('SetActive') -or
+            -not ($onRelease.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.FullName -match 'TurfRegistrar::OnDestroy' })) {
+            throw 'Native turf pool ownership or destruction sequence no longer matches the cleanup guard.'
+        }
+        'PASS Released-turf guard matches the installed native pool and registrar lifecycle.'
+        Assert-MethodCalls 'StructureEditorUI' 'DrawPreviewContents' 'StructureEditorUI::DrawRoofOverlay'
+        Assert-MethodCalls 'StructureEditorUI' 'DrawPreviewPanel' 'StructureEditorUI::DrawRoofLegend'
+        Assert-MethodCalls 'StructureEditorUI' 'GetRoofPrefab' 'GetComponentsInChildren<TileTags>'
+        Assert-MethodCalls 'StructureEditorUI' 'GetRoofPrefab' 'PreviewRendererDiscovery::IsBranchActive'
+        $deroofer = $gameAssembly.MainModule.Types | Where-Object Name -eq 'Deroofer'
+        $roofFlag = $deroofer.Fields | Where-Object Name -eq 'active'
+        $reader = $deroofer.Methods | Where-Object Name -eq 'Deserialize'
+        if ($roofFlag.FieldType.FullName -ne 'System.Boolean' -or
+            -not ($reader.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] -and $_.Operand.FullName -match 'BinaryReader::ReadBoolean' })) {
+            throw 'Native de-roofing state no longer matches the roof preview reader.'
+        }
+        'PASS Roof overlay uses native tile-tag components and matches native de-roofing payload.'
         $bed = $gameAssembly.MainModule.Types | Where-Object Name -eq 'Bed'
         $interact = $bed.Methods | Where-Object Name -eq 'OnInteract'
         $ownerReads = @($interact.Body.Instructions | Where-Object {

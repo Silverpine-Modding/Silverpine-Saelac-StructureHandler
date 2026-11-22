@@ -21,7 +21,8 @@ namespace StructureHandler;
 
 internal static class StructureTransfer
 {
-    private static readonly HashSet<string> BaseShedObjects = new();
+    private static HashSet<string>? BaseShedObjects;
+    private static readonly FieldInfo PendingPoolStarts = AccessTools.Field(typeof(ObjectPool), "toCallStartOn");
     private static Vector2Int? ExportTopLeft;
     private static Vector2Int? ExportBottomRight;
     private static bool HasCompleteExportBounds =>
@@ -168,28 +169,22 @@ internal static class StructureTransfer
         return true;
     }
 
-    internal static void CaptureBaseShed()
+    internal static void CaptureBaseShed(Plot shedPlot)
     {
+        if (BaseShedObjects != null || shedPlot == null) return;
         try
         {
-            Plot shedPlot = Plot.allPlots.FirstOrDefault(
-                plot => plot.owners.Contains(NPCName.None));
-            if (shedPlot == null)
-            {
-                Plugin.Log.LogWarning("Could not find the base-game shed plot.");
-                return;
-            }
-
+            var baseline = new HashSet<string>(StringComparer.Ordinal);
             foreach (GameObject gameObject in
                      UtilityFunctions.GetGameObjectsWithComponent<ISerializableMonoBehavior>())
             {
-                if (gameObject != null &&
+                if (gameObject != null && gameObject.activeInHierarchy && gameObject.scene == shedPlot.gameObject.scene &&
                     shedPlot.bounds.Contains(gameObject.transform.GetVector3IntPosition()))
                 {
-                    BaseShedObjects.Add(GetObjectSignature(gameObject));
+                    baseline.Add(GetObjectSignature(gameObject));
                 }
             }
-
+            BaseShedObjects = baseline; // publish only the complete startup snapshot
         }
         catch (Exception exception)
         {
@@ -233,6 +228,8 @@ internal static class StructureTransfer
                 .Where(gameObject => !IsTerrainObject(gameObject))
                 .ToList();
             List<StructureObject> readableObjects = CreateObjectRecords(objects);
+            if (ExportTopLeft is Vector2Int top && ExportBottomRight is Vector2Int bottom)
+                StructurePlacementPolicy.RequireInsideExportBounds(readableObjects, top.x, top.y, bottom.x, bottom.y);
             List<SupportingTerrain> supportingTerrain =
                 FindSupportingTerrain(readableObjects,
                     exportCandidates.Where(IsTerrainObject));
@@ -268,11 +265,12 @@ internal static class StructureTransfer
             // Destination-specific ground is captured at import time. Keep it
             // in transaction/native-save snapshots, not in portable exports.
             DestinationGroundPolicy.StripExportedHistory(file);
-            Action write = () =>
+            ValidateImportFiles(new[] { file }); // Never replace a good export with unreconstructible data.
+            void WriteExport(bool allowOverwrite)
             {
                 try
                 {
-                    StructureJsonFile.Write(path, StringSerializationAPI.Serialize(typeof(StructureFile), file));
+                    StructureJsonFile.Write(path, StringSerializationAPI.Serialize(typeof(StructureFile), file), allowOverwrite);
                     DialogBox.Instance.DisplayTextNoDialog(
                         $"Exported {objects.Count} structure/furniture objects and " +
                         $"{supportingTerrain.Count} terrain tiles to <i>\"{path}\"</i>.");
@@ -282,18 +280,18 @@ internal static class StructureTransfer
                     Plugin.Log.LogError(exception);
                     DialogBox.Instance.DisplayTextNoDialog("Export failed: " + exception.Message.Truncate(250));
                 }
-            };
+            }
 
             if (File.Exists(path))
             {
                 DialogBox.Instance.DisplayTextNoDialog(
                     $"A structure named <i>\"{cleanName}\"</i> already exists. Overwrite it?",
-                    new DialogOption("Overwrite", write),
+                    new DialogOption("Overwrite", () => WriteExport(true)),
                     new DialogOption("Cancel", null));
             }
             else
             {
-                write();
+                WriteExport(false);
             }
         }
         catch (Exception exception)
@@ -318,6 +316,7 @@ internal static class StructureTransfer
     {
         try
         {
+            if (StructureSaveState.EditBlockReason is string blocked) throw new InvalidOperationException(blocked);
             List<StructureFile> files = paths.Select(ReadFile).ToList();
             ValidateImportFiles(files, enforcePlacement: true);
             // Build each footprint once, then count only pairs sharing cells.
@@ -339,7 +338,7 @@ internal static class StructureTransfer
             var conflicts = counts.OrderBy(pair => pair.Key.Item1).ThenBy(pair => pair.Key.Item2)
                 .Select(pair => Tuple.Create(files[pair.Key.Item1], files[pair.Key.Item2], pair.Value))
                 .ToList();
-            ResolveConflict(files, conflicts, new List<(int Winner, int Loser)>(), 0);
+            ResolveConflict(files, conflicts, new List<(int Winner, int Loser)>(), 0, StructureSaveState.SaveEpoch);
         }
         catch (Exception exception)
         {
@@ -350,8 +349,9 @@ internal static class StructureTransfer
 
     private static void ResolveConflict(List<StructureFile> files,
         List<Tuple<StructureFile, StructureFile, int>> conflicts,
-        List<(int Winner, int Loser)> choices, int conflictIndex, string explanation = "")
+        List<(int Winner, int Loser)> choices, int conflictIndex, int epoch, string explanation = "")
     {
+        if (SerializationManager.loadingSave || epoch != StructureSaveState.SaveEpoch) return;
         if (conflictIndex >= conflicts.Count)
         {
             if (!StructureAlgorithms.TryOrder(files.Count, choices, out var order))
@@ -370,11 +370,11 @@ internal static class StructureTransfer
             if (!StructureAlgorithms.TryOrder(files.Count, choices, out _))
             {
                 choices.RemoveAt(choices.Count - 1);
-                ResolveConflict(files, conflicts, choices, conflictIndex,
+                ResolveConflict(files, conflicts, choices, conflictIndex, epoch,
                     "That choice contradicts earlier winners. Choose the other winner or cancel and restart.\n\n");
                 return;
             }
-            ResolveConflict(files, conflicts, choices, conflictIndex + 1);
+            ResolveConflict(files, conflicts, choices, conflictIndex + 1, epoch);
         }
         DialogBox.Instance.DisplayTextNoDialog(
             explanation + $"Conflict {conflictIndex + 1} of {conflicts.Count}: " +
@@ -387,38 +387,35 @@ internal static class StructureTransfer
 
     private static void ImportAll(List<StructureFile> files)
     {
+        int applied = 0, queued = 0;
         try
         {
+            if (StructureSaveState.EditBlockReason is string blocked) throw new InvalidOperationException(blocked);
             if (!StructureSaveState.TryCurrentTile(out var currentTile))
                 throw new InvalidOperationException("Load a game before importing.");
-            int applied = 0;
-            int queued = 0;
-            var plans = files.Select(file => StructurePlans.Partition(file, (x, y) =>
-            {
-                var tile = Plugin.GetWorldTile(new Vector2(x, y));
-                return (tile.x, tile.y);
-            })).ToList();
+            var plans = files.Select(StructurePlans.Partition).ToList();
             foreach (var tile in plans.SelectMany(plan => plan.Keys).Distinct())
                 if (!DungeonGenerationManager.Instance.worldTiles.ContainsKey(new Vector2Int(tile.X, tile.Y)))
                     throw new InvalidDataException($"Destination world tile ({tile.X}, {tile.Y}) does not exist in this save.");
             foreach (var parts in plans)
             {
+                string importId = Guid.NewGuid().ToString("N");
+                // A rejected local section must not leave the other half of
+                // this blueprint queued for a later, unexpected world edit.
+                if (parts.TryGetValue((currentTile.x, currentTile.y), out var local))
+                {
+                    ApplyLoadedImport(local);
+                    applied++;
+                }
                 // Partition by anchor. Distant objects never exist in the live
                 // scene alongside the destination tile's unloaded saved blob.
                 foreach (var part in parts)
                 {
-                    if (part.Key == (currentTile.x, currentTile.y))
-                    {
-                        ApplyLoadedImport(part.Value);
-                        applied++;
-                    }
-                    else
-                    {
-                        StructureSaveState.Pending.Add(new PendingTileImport
-                        { x = part.Key.X, y = part.Key.Y, structure = part.Value });
-                        Plugin.ProtectImportedPositions(GetOccupiedPositions(part.Value));
-                        queued++;
-                    }
+                    if (part.Key == (currentTile.x, currentTile.y)) continue;
+                    StructureSaveState.Pending.Add(new PendingTileImport
+                        { x = part.Key.X, y = part.Key.Y, structure = part.Value, importId = importId });
+                    queued++;
+                    Plugin.ProtectImportedPositions(GetOccupiedPositions(part.Value));
                 }
             }
             DialogBox.Instance.DisplayTextNoDialog(
@@ -428,17 +425,23 @@ internal static class StructureTransfer
         catch (Exception exception)
         {
             Plugin.Log.LogError(exception);
-            DialogBox.Instance.DisplayTextNoDialog("Import stopped: " + exception.Message.Truncate(300));
+            if (exception is ImportRecoveryException) StructureSaveState.MarkIncompleteRollback();
+            DialogBox.Instance.DisplayTextNoDialog($"Import stopped ({applied} section(s) applied, {queued} queued): " + exception.Message.Truncate(300));
         }
     }
 
     internal static void ApplyLoadedImport(StructureFile file)
     {
+        if (!StructureSaveState.TryCurrentTile(out var tile))
+            throw new InvalidOperationException("Load the destination world tile before importing.");
+        StructurePlans.RequireSectionOwner(file, tile.x, tile.y);
         ValidatePlacement(file);
         var occupied = GetOccupiedPositions(file);
         var replacingPrefabs = new HashSet<string>(file.objects.Select(item => item.prefabName)
             .Concat(file.supportingTerrain
                 .Select(item => item.prefabName)), StringComparer.OrdinalIgnoreCase);
+        var canonicalName = Plugin.RegisteredNameResolver();
+        replacingPrefabs.UnionWith(replacingPrefabs.ToArray().Select(canonicalName));
         var originals = CollectObjectsAt(occupied, replacingPrefabs);
         originals.UnionWith(CollectVegetationAt(occupied));
         var destinationGround = DestinationGround.Capture(file, originals);
@@ -467,7 +470,7 @@ internal static class StructureTransfer
         {
             var cell = item.transform.GetVector2IntPosition();
             if (!cellsWithoutTerrain.Contains((cell.x, cell.y))) return false;
-            PlacementSlot slot = StructureEditorUI.GetPlacementSlot(SerializationManager.GetPrefabName(item));
+            PlacementSlot slot = StructureEditorUI.GetPlacementSlot(Plugin.PrefabNameOf(item));
             // Carry actual ground (even non-prefixed mod floors) and retained
             // water. Do not carry an old grass edge as ground on reimport.
             if (slot != PlacementSlot.Ground && slot != PlacementSlot.WaterOverlay)
@@ -488,7 +491,7 @@ internal static class StructureTransfer
         var created = new List<GameObject>();
         bool removingOriginals = false;
         var restoredObjects = new List<GameObject>();
-        StructureTerrainPersistence.RememberOriginals(originals);
+        var suppressed = StructureTerrainPersistence.StageOriginals(originals);
         StructureSaveState.Mutating = true;
         try
         {
@@ -518,11 +521,12 @@ internal static class StructureTransfer
                 // Commit the exact footprint only after replacement succeeds.
                 // The transaction snapshot restores it if a later step fails.
                 StructureSaveState.ImportedCells.Record(occupied.Select(cell => (cell.x, cell.y)));
+                suppressed.Commit();
             }, () =>
             {
                 try
                 {
-                    RemoveGameObjects(created);
+                    DiscardCreatedObjects(created);
                     if (removingOriginals)
                     {
                         // Remove any originals left after an interrupted removal,
@@ -535,10 +539,17 @@ internal static class StructureTransfer
                 }
                 finally
                 {
-                    StructureSaveState.Restore(savedState);
+                    StructureSaveState.RestoreAfterRollback(savedState);
                     StructureTerrainPersistence.AttachExisting(restoredObjects);
                 }
             }, GetDisplayName(file));
+        }
+        catch (ImportRecoveryException)
+        {
+            // If undo itself failed, some original resident scenery may really
+            // be missing. Keep its snapshot for the upcoming save switch.
+            suppressed.Commit();
+            throw;
         }
         finally
         {
@@ -548,7 +559,26 @@ internal static class StructureTransfer
             // tile coordinates or a rectangular bounds expansion.
             if (removingOriginals) RequestTileVisualRefresh(occupied);
         }
-        ActionQueue.Instance.DoAfterXFrames(1, WorldInfoManager.Instance.CheckDarknessMode);
+        RequestDarknessRefresh();
+    }
+
+    private static void RequestDarknessRefresh()
+    {
+        // This is presentation work AFTER commit. A missing or replaced scene
+        // host must not leave a successful import in the queue to replay.
+        try
+        {
+            var host = WorldInfoManager.Instance;
+            var queue = ActionQueue.Instance;
+            if (host == null || queue == null) return;
+            queue.DoAfterXFrames(1, () =>
+            {
+                if (host == null || host != WorldInfoManager.Instance) return;
+                try { host.CheckDarknessMode(); }
+                catch (Exception e) { FrameworkDiagnostics.Report(Plugin.PluginGuid, "refresh imported area darkness", e); }
+            });
+        }
+        catch (Exception e) { FrameworkDiagnostics.Report(Plugin.PluginGuid, "schedule imported area darkness refresh", e); }
     }
 
     internal static void RequestTileVisualRefresh(IEnumerable<Vector2Int> cells)
@@ -590,6 +620,16 @@ internal static class StructureTransfer
     {
         HashSet<string> missingPrefabs =
             new(StringComparer.OrdinalIgnoreCase);
+        var checkedPrefabs = new Dictionary<string, GameObject?>(StringComparer.Ordinal);
+        GameObject? Lookup(string name)
+        {
+            if (checkedPrefabs.TryGetValue(name, out var found)) return found;
+            var prefab = Plugin.ResolvePrefab(name);
+            if (prefab == null) missingPrefabs.Add(name);
+            else if (WorldPrefabPolicy.CannotReconstruct(prefab) is string reason)
+                throw new InvalidDataException($"Cannot import '{name}': it {reason}. No tiles were changed by this section.");
+            return checkedPrefabs[name] = prefab;
+        }
         foreach (StructureFile file in files)
         {
             if (file.formatVersion < 3)
@@ -598,27 +638,17 @@ internal static class StructureTransfer
                 continue;
             }
 
+            StructurePlacementPolicy.ValidateDocumentGeometry(file);
             foreach (StructureObject record in
                      file.objects ?? new List<StructureObject>())
             {
-                ValidatePosition(record.x, record.y, record.z, record.prefabName);
-                if ((record.occupiedOffsets?.Count ?? 0) > 10000 ||
-                    (record.occupiedOffsets?.Any(offset => offset == null ||
-                        Math.Abs((long)offset.x) > 10000 || Math.Abs((long)offset.y) > 10000) ?? false))
-                    throw new InvalidDataException($"Invalid occupied footprint for {record.prefabName}.");
-                if (Plugin.ResolvePrefab(record.prefabName) == null)
-                    missingPrefabs.Add(record.prefabName);
-                ValidateComponentData(record.components, record.prefabName);
+                if (enforcePlacement) StructurePlans.RequireSingleOwner(record);
+                ValidateComponentData(record.components, record.prefabName, Lookup(record.prefabName));
             }
             foreach (SupportingTerrain terrain in
                      file.supportingTerrain ?? new List<SupportingTerrain>())
             {
-                ValidatePosition(
-                    terrain.x, terrain.y, terrain.z, terrain.prefabName);
-                if (Plugin.ResolvePrefab(terrain.prefabName) == null)
-                    missingPrefabs.Add(terrain.prefabName);
-                ValidateComponentData(
-                    terrain.components, terrain.prefabName);
+                ValidateComponentData(terrain.components, terrain.prefabName, Lookup(terrain.prefabName));
             }
             if (enforcePlacement) ValidatePlacement(file);
         }
@@ -639,37 +669,19 @@ internal static class StructureTransfer
             throw new InvalidDataException("Import cancelled before changing the world. " + conflict);
     }
 
-    private static void ValidatePosition(
-        float x, float y, float z, string prefabName)
-    {
-        if (Math.Abs(x) > 10000000 || Math.Abs(y) > 10000000 ||
-            float.IsNaN(x) || float.IsInfinity(x) ||
-            float.IsNaN(y) || float.IsInfinity(y) ||
-            float.IsNaN(z) || float.IsInfinity(z))
-            throw new InvalidDataException(
-                $"Invalid coordinates for {prefabName}.");
-    }
-
-    private static void ValidateComponentData(
+    internal static void ValidateComponentData(
         IEnumerable<StructureComponent>? components,
-        string prefabName)
+        string prefabName, GameObject? prefab)
     {
         foreach (StructureComponent component in
                  components ?? Enumerable.Empty<StructureComponent>())
         {
-            if (string.IsNullOrWhiteSpace(component.type))
+            if (component == null || string.IsNullOrWhiteSpace(component.type))
                 throw new InvalidDataException(
                     $"A component on {prefabName} has no type.");
             Convert.FromBase64String(component.dataBase64 ?? "");
-            var prefab = Plugin.ResolvePrefab(prefabName);
             if (prefab == null) continue;
-            var target = ResolveHierarchyPath(prefab.transform, component.hierarchyPath);
-            int index = Math.Max(0, component.componentIndex);
-            if (target == null || target.GetComponents<MonoBehaviour>()
-                    .OfType<ISerializableMonoBehavior>()
-                    .Count(candidate => ComponentTypeMatches(candidate.GetType(), component.type)) <= index)
-                throw new InvalidDataException(
-                    $"Missing saved component {component.type} on {prefabName}; import was not applied.");
+            BindComponent(prefab, component, prefabName);
         }
     }
 
@@ -700,7 +712,13 @@ internal static class StructureTransfer
             file.serializedObjectsBase64 = "";
         }
         if (file.formatVersion >= 3)
+        {
+            StructurePlacementPolicy.ValidateDocumentGeometry(file);
+            var resolve = Plugin.RegisteredNameResolver();
+            foreach (var o in file.objects) o.prefabName = resolve(o.prefabName);
+            foreach (var t in file.supportingTerrain) t.prefabName = resolve(t.prefabName);
             StructureFileNormalizer.MoveTileObjectsToTerrain(file);
+        }
         bool hasReadableData =
             file.objects.Count > 0 || file.supportingTerrain.Count > 0;
         if (file.formatVersion >= 3 && !hasReadableData)
@@ -741,14 +759,14 @@ internal static class StructureTransfer
             .Where(gameObject =>
                 gameObject != null &&
                 gameObject.activeInHierarchy &&
+                IsInsideSelectedExportBounds(gameObject.transform.GetVector2IntPosition()) &&
+                !WorldPrefabPolicy.CharacterOrSystem(gameObject) &&
                 (HasCompleteExportBounds ||
                  (gameObject.GetComponent<IPersistentSerializableMonoBehavior>() == null &&
                   gameObject.GetComponent<PersistentEntity>() == null)) &&
                 (HasCompleteExportBounds ||
                  (!IsNaturalCliffWall(gameObject) &&
-                  !BaseShedObjects.Contains(GetObjectSignature(gameObject)))) &&
-                IsInsideSelectedExportBounds(
-                    gameObject.transform.GetVector2IntPosition()) &&
+                  BaseShedObjects?.Contains(GetObjectSignature(gameObject)) != true)) &&
                 (HasCompleteExportBounds ||
                  WorldInfoManager.Instance.IsOnPlayerOwnedPlot(
                      gameObject.transform.GetVector2IntPosition())) &&
@@ -766,18 +784,14 @@ internal static class StructureTransfer
 
     private static bool IsBoundedExportFixture(GameObject gameObject)
     {
-        if (gameObject == Player.Instance.gameObject ||
-            gameObject.GetComponent<EntityMover>() != null ||
-            gameObject.GetComponent<NeuralNPC>() != null ||
-            gameObject.GetComponent<Enemy>() != null)
-            return false;
-
-        return true;
+        // A serializable child or transient scene helper isn't automatically
+        // an independently reconstructible object.
+        return Plugin.ResolvePrefab(Plugin.PrefabNameOf(gameObject)) != null;
     }
 
     private static bool IsNaturalCliffWall(GameObject gameObject)
     {
-        string prefabName = SerializationManager.GetPrefabName(gameObject);
+        string prefabName = Plugin.PrefabNameOf(gameObject);
         return prefabName.Equals(
                    "prefab_wall_rock_cliff",
                    StringComparison.OrdinalIgnoreCase) ||
@@ -874,11 +888,10 @@ internal static class StructureTransfer
                 for (int y = bottomRight.y; y <= topLeft.y; y++)
                 {
                     Vector2Int position = new(x, y);
-                    foreach (GameObject gameObject in
-                             Turfs.GetTurfGameObjects(position)
-                                 .Where(IsTerrainObject))
+                    if (!Turfs.TryGetTurfGameObjects(position, out var items)) continue;
+                    foreach (GameObject gameObject in items)
                     {
-                        AddTerrainRecord(result, seen, gameObject, position);
+                        if (IsTerrainObject(gameObject)) AddTerrainRecord(result, seen, gameObject, position);
                     }
                 }
             }
@@ -893,7 +906,8 @@ internal static class StructureTransfer
         GameObject gameObject,
         Vector2Int position)
     {
-        string prefabName = SerializationManager.GetPrefabName(gameObject);
+        if (!IsInsideSelectedExportBounds(position) || WorldPrefabPolicy.CharacterOrSystem(gameObject)) return;
+        string prefabName = Plugin.PrefabNameOf(gameObject);
         if (!WaterExportPolicy.ShouldIncludeTerrain(prefabName, Plugin.ExportOtherWaterTiles.Value))
             return;
         if (!seen.Add((position.x, position.y, prefabName.ToLowerInvariant())))
@@ -932,11 +946,12 @@ internal static class StructureTransfer
                 new Vector3(terrain.x, terrain.y, terrain.z),
                 prefab.transform.rotation);
             createdObjects.Add(gameObject);
-            ImportedPrefabLifecycle.Prepare(gameObject, prefab.name);
+            ImportedPrefabLifecycle.PrepareForPlacement(gameObject, prefab.name);
             ApplyComponentRecords(
                 gameObject, terrain.components, terrain.prefabName);
             if (terrain.hasMapZoneName)
                 SetMapZoneName(gameObject, terrain.mapZoneName);
+            WorldPrefabPolicy.RequirePlacedInstance(gameObject, prefab, Plugin.TemplateOf);
             StructureSaveState.TrackAppearance(gameObject, terrain.prefabName,
                 terrain.spriteVariantIndex, false, terrain.lockSpriteVariant);
         }
@@ -957,7 +972,7 @@ internal static class StructureTransfer
                 gameObject.GetComponentInChildren<Turnable>(true);
             StructureObject record = new()
             {
-                prefabName = SerializationManager.GetPrefabName(gameObject),
+                prefabName = Plugin.PrefabNameOf(gameObject),
                 x = position.x,
                 y = position.y,
                 z = position.z,
@@ -975,7 +990,7 @@ internal static class StructureTransfer
                 hasMapZoneName = hasZoneName,
                 mapZoneName = zoneName,
                 occupiedOffsets = StructureEditorUI.GetPrefabOccupiedOffsets(
-                    SerializationManager.GetPrefabName(gameObject),
+                    Plugin.PrefabNameOf(gameObject),
                     turnable != null ? turnable.GetIndex() : -1)
             };
 
@@ -1023,7 +1038,7 @@ internal static class StructureTransfer
         return result;
     }
 
-    private static string GetHierarchyPath(
+    internal static string GetHierarchyPath(
         Transform root, Transform target)
     {
         if (target == root)
@@ -1061,20 +1076,13 @@ internal static class StructureTransfer
         return current;
     }
 
-    private static bool ComponentTypeMatches(
-        Type candidate, string savedType)
+    private static ISerializableMonoBehavior BindComponent(GameObject instance, StructureComponent record,
+        string prefabName)
     {
-        string savedFullName = (savedType ?? "")
-            .Split(',')[0]
-            .Trim();
-        string compactName =
-            (candidate.FullName ?? candidate.Name) + ", " +
-            candidate.Assembly.GetName().Name;
-        return candidate.AssemblyQualifiedName == savedType ||
-               compactName == savedType ||
-               candidate.FullName == savedType ||
-               candidate.FullName == savedFullName ||
-               candidate.Name == savedType;
+        if (record == null) throw new InvalidDataException($"Missing component record on {prefabName}.");
+        var target = ResolveHierarchyPath(instance.transform, record.hierarchyPath) ??
+            throw new InvalidDataException($"Missing component path '{record.hierarchyPath}' on {prefabName}.");
+        return SavedComponentBinding.Select(target.GetComponents<MonoBehaviour>().OfType<ISerializableMonoBehavior>(), record, prefabName);
     }
 
     private static void ApplyComponentRecords(
@@ -1082,39 +1090,15 @@ internal static class StructureTransfer
         IEnumerable<StructureComponent>? savedComponents,
         string prefabName)
     {
-        foreach (StructureComponent savedComponent in
-                 savedComponents ?? Enumerable.Empty<StructureComponent>())
+        if (savedComponents == null || savedComponents is ICollection<StructureComponent> {Count: 0}) return;
+        foreach (var entry in SavedComponentBinding.FinalWrites(savedComponents,
+                     record => BindComponent(gameObject, record, prefabName)))
         {
-            Transform? target = ResolveHierarchyPath(
-                gameObject.transform, savedComponent.hierarchyPath);
-            if (target == null)
-            {
-                throw new InvalidDataException(
-                    $"Missing component path '{savedComponent.hierarchyPath}' " +
-                    $"on {prefabName}.");
-            }
-
-            ISerializableMonoBehavior[] matches =
-                target.GetComponents<MonoBehaviour>()
-                    .OfType<ISerializableMonoBehavior>()
-                    .Where(candidate => ComponentTypeMatches(
-                        candidate.GetType(), savedComponent.type))
-                    .ToArray();
-            int index = savedComponent.componentIndex >= 0
-                ? savedComponent.componentIndex
-                : 0;
-            if (index >= matches.Length)
-            {
-                throw new InvalidDataException(
-                    $"Missing component {savedComponent.type} " +
-                    $"at '{savedComponent.hierarchyPath}' on {prefabName}.");
-            }
-
             byte[] data = Convert.FromBase64String(
-                savedComponent.dataBase64 ?? "");
+                entry.Record.dataBase64 ?? "");
             using MemoryStream stream = new(data);
             using BinaryReader reader = new(stream);
-            matches[index].Deserialize(reader);
+            entry.Target.Deserialize(reader);
         }
     }
 
@@ -1141,7 +1125,7 @@ internal static class StructureTransfer
                     prefab, position, prefab.transform.rotation);
             }
             createdObjects.Add(gameObject);
-            ImportedPrefabLifecycle.Prepare(gameObject, prefab.name);
+            ImportedPrefabLifecycle.PrepareForPlacement(gameObject, prefab.name);
             ApplyComponentRecords(
                 gameObject, record.components, record.prefabName);
 
@@ -1157,6 +1141,7 @@ internal static class StructureTransfer
                 SetEditableSignMessage(gameObject, record.signMessage);
             if (record.hasMapZoneName)
                 SetMapZoneName(gameObject, record.mapZoneName);
+            WorldPrefabPolicy.RequirePlacedInstance(gameObject, prefab, Plugin.TemplateOf);
             StructureSaveState.TrackAppearance(gameObject, record.prefabName,
                 record.spriteVariantIndex, record.npcInteractionRangeExtender, record.lockSpriteVariant);
             count++;
@@ -1167,7 +1152,7 @@ internal static class StructureTransfer
 
     private static int GetCurrentSpriteVariantIndex(GameObject gameObject)
     {
-        string prefabName = SerializationManager.GetPrefabName(gameObject);
+        string prefabName = Plugin.PrefabNameOf(gameObject);
         Sprite[] variants =
             StructureEditorUI.GetSpriteVariantsForPrefab(prefabName);
         if (variants.Length < 2)
@@ -1183,7 +1168,7 @@ internal static class StructureTransfer
     }
 
     internal static void ApplySpriteVariantNow(
-        GameObject gameObject, string prefabName, int spriteVariantIndex)
+        GameObject gameObject, string prefabName, int spriteVariantIndex, TemporarySpriteOverride<SpriteRenderer, Sprite> paint)
     {
         if (spriteVariantIndex < 0 ||
             gameObject.GetComponentInChildren<Turnable>(true) != null)
@@ -1203,7 +1188,7 @@ internal static class StructureTransfer
 
         int index = (spriteVariantIndex % variants.Length +
                      variants.Length) % variants.Length;
-        renderer.sprite = variants[index];
+        paint.Paint(renderer, variants[index]);
         // This path is only for exceptional overrides. Ordinary variants are
         // applied to their native serialized component by NativeAppearance.
     }
@@ -1308,18 +1293,14 @@ internal static class StructureTransfer
             foreach (GameObject gameObject in Turfs.GetTurfGameObjects(position))
             {
                 if (gameObject == null || !gameObject.activeInHierarchy ||
-                    gameObject == Player.Instance.gameObject ||
-                    gameObject.GetComponent<NeuralNPC>() != null ||
-                    gameObject.GetComponent<EntityMover>() != null ||
-                    gameObject.GetComponent<IPersistentSerializableMonoBehavior>() != null ||
-                    gameObject.GetComponent<PersistentEntity>() != null)
+                    WorldPrefabPolicy.ProtectedFromRemoval(gameObject))
                     continue;
 
                 if (gameObject.GetComponentsInChildren<MonoBehaviour>(true)
                         .OfType<ISerializableMonoBehavior>().Any() ||
                     IsTerrainObject(gameObject) ||
                     gameObject.GetComponent<StructureSupplementalInstance>() != null ||
-                    replacingPrefabs.Contains(SerializationManager.GetPrefabName(gameObject)))
+                    replacingPrefabs.Contains(Plugin.PrefabNameOf(gameObject)))
                     existing.Add(gameObject);
             }
         }
@@ -1337,11 +1318,7 @@ internal static class StructureTransfer
             if (gameObject == null || !gameObject.activeInHierarchy ||
                 !positions.Contains(
                     gameObject.transform.GetVector2IntPosition()) ||
-                gameObject == Player.Instance.gameObject ||
-                gameObject.GetComponent<NeuralNPC>() != null ||
-                gameObject.GetComponent<EntityMover>() != null ||
-                gameObject.GetComponent<IPersistentSerializableMonoBehavior>() != null ||
-                gameObject.GetComponent<PersistentEntity>() != null)
+                WorldPrefabPolicy.ProtectedFromRemoval(gameObject))
                 continue;
 
             existing.Add(gameObject);
@@ -1359,11 +1336,11 @@ internal static class StructureTransfer
             foreach (GameObject gameObject in Turfs.GetTurfGameObjects(position))
             {
                 if (gameObject != null && gameObject.activeInHierarchy &&
-                    gameObject.GetComponent<EntityMover>() == null &&
                     !IsTerrainObject(gameObject) &&
                     (gameObject.GetComponent<Tree>() != null ||
                      gameObject.name.ContainsAnyIgnoreCase(
-                         "grass", "tree", "bush", "plant", "herb", "crop")))
+                         "grass", "tree", "bush", "plant", "herb", "crop")) &&
+                    !WorldPrefabPolicy.ProtectedFromRemoval(gameObject))
                 {
                     vegetation.Add(gameObject);
                 }
@@ -1373,18 +1350,25 @@ internal static class StructureTransfer
         return vegetation;
     }
 
-    internal static void RemoveGameObjects(
-        IEnumerable<GameObject> gameObjects)
+    internal static void RemoveGameObjects(IEnumerable<GameObject> gameObjects) =>
+        RemoveInstances(gameObjects, discardInactiveClones: false);
+
+    // Only for instances allocated by the operation being rolled back. A mod
+    // restore callback can throw before activating its fresh clone.
+    internal static void DiscardCreatedObjects(IEnumerable<GameObject> ownedClones) =>
+        RemoveInstances(ownedClones, discardInactiveClones: true);
+
+    private static void RemoveInstances(IEnumerable<GameObject> gameObjects, bool discardInactiveClones)
     {
+        var pending = PendingPoolStarts.GetValue(null) as List<IObjectPoolCompliant>;
         foreach (GameObject gameObject in gameObjects
                      .Where(item => item != null)
                      .Distinct())
         {
-            if (!gameObject.activeInHierarchy) continue;
+            if (!gameObject.activeInHierarchy && (!discardInactiveClones || !gameObject.scene.IsValid() ||
+                StructureReleasedPoolSavePatch.IsAlreadyReleased(gameObject))) continue;
             // Released pool entries must not receive a deferred pool Start.
-            var pending = Traverse.Create(typeof(ObjectPool))
-                .Field("toCallStartOn").GetValue<List<IObjectPoolCompliant>>();
-            if (pending != null)
+            if (pending != null && pending.Count > 0)
             {
                 var callbacks = new HashSet<IObjectPoolCompliant>(
                     gameObject.GetComponentsInChildren<IObjectPoolCompliant>(true));
@@ -1414,11 +1398,11 @@ internal static class StructureTransfer
         foreach (TurfRegistrar registrar in gameObjects
                      .Where(item => item != null)
                      .SelectMany(item =>
-                         item.GetComponentsInChildren<TurfRegistrar>(true))
+                         item.GetComponentsInChildren<TurfRegistrar>(false))
                      .Where(item => item != null)
                      .Distinct())
         {
-            registrar.Register();
+            TurfRegistrationLifecycle.RegisterIfLive(registrar);
         }
     }
 
@@ -1433,14 +1417,14 @@ internal static class StructureTransfer
     private static string GetObjectSignature(GameObject gameObject)
     {
         Vector2Int position = gameObject.transform.GetVector2IntPosition();
-        return SerializationManager.GetPrefabName(gameObject) + "|" +
+        return Plugin.PrefabNameOf(gameObject) + "|" +
                position.x + "|" + position.y;
     }
 
     internal static bool IsTerrainObject(GameObject gameObject)
     {
         if (gameObject == null) return false;
-        string prefabName = SerializationManager.GetPrefabName(gameObject);
+        string prefabName = Plugin.PrefabNameOf(gameObject);
         return (StructurePlacementPolicy.IsTerrainRecordName(prefabName) ||
                 gameObject.GetComponent<GrassTileHandler>() != null) &&
                gameObject.GetComponent<Door>() == null;

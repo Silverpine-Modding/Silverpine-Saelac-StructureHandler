@@ -30,5 +30,5 @@ internal static class DestinationGroundPolicy
     }
 
     private static void Strip(List<StructureComponent>? components) => components?.RemoveAll(item =>
-        string.Equals(item.type?.Split(',')[0].Trim(), "GrassTileHandler", StringComparison.Ordinal));
+        item != null && SavedComponentBinding.IsNative(item.type, "GrassTileHandler"));
 }

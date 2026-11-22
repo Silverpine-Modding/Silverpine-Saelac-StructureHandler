@@ -14,8 +14,8 @@ internal static class StructureItemData
     private static readonly FieldInfo StorageField = typeof(VersionSafeStorage).GetField("storage", BindingFlags.NonPublic | BindingFlags.Instance)!;
     internal static bool IsItem(StructureObject record) => record.prefabName.Equals("prefab_item", StringComparison.OrdinalIgnoreCase);
     internal static bool IsComponent(StructureComponent component, string type) =>
-        string.IsNullOrEmpty(component.hierarchyPath) && component.componentIndex <= 0 &&
-        component.type.Split(',')[0].Trim() == type;
+        component != null && string.IsNullOrEmpty(component.hierarchyPath) && component.componentIndex is -1 or 0 &&
+        SavedComponentBinding.IsNative(component.type, type);
     internal static byte[] Bytes(ISerializable value)
     {
         using var stream = new MemoryStream();

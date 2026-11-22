@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 
 namespace StructureHandler;
@@ -63,15 +64,73 @@ internal static class StructurePlacementPolicy
         return PlacementSlot.None;
     }
 
-    internal static IEnumerable<(int X, int Y)> Cells(StructureObject item)
+    internal static bool ValidateFootprint(StructureObject item, bool repairMissingAnchor = false)
     {
-        int x = checked((int)Math.Round(item.x, MidpointRounding.ToEven));
-        int y = checked((int)Math.Round(item.y, MidpointRounding.ToEven));
-        if (item.occupiedOffsets == null || item.occupiedOffsets.Count == 0)
-            yield return (x, y);
-        else
+        var offsets = item.occupiedOffsets;
+        if (offsets == null || offsets.Count == 0) return false; // Implicit single anchor.
+        if (offsets.Count > 10000 || offsets.Any(o => o == null ||
+            Math.Abs((long)o.x) > 10000 || Math.Abs((long)o.y) > 10000))
+            throw new InvalidDataException($"Invalid occupied footprint for {item.prefabName}.");
+        if (offsets.Any(o => o.x == 0 && o.y == 0)) return false;
+        if (!repairMissingAnchor || offsets.Count >= 10000)
+            throw new InvalidDataException($"{item.prefabName} at ({item.x}, {item.y}) has a footprint without its (0, 0) anchor. Correct its occupiedOffsets before importing.");
+        offsets.Insert(0, new StructurePosition());
+        return true;
+    }
+
+    internal static bool Supported(double value) => Math.Abs(value) <= 10000000d;
+
+    internal static bool FitsAt(StructureObject item, float x, float y)
+    {
+        if (!Supported(x) || !Supported(y) || !Supported(item.z)) return false;
+        double ix = Math.Round(x, MidpointRounding.ToEven), iy = Math.Round(y, MidpointRounding.ToEven);
+        return item.occupiedOffsets == null || item.occupiedOffsets.All(o =>
+            o != null && Supported(ix + o.x) && Supported(iy + o.y));
+    }
+
+    // Validate before normalization, rounding or indexing. Otherwise a rejected
+    // document can already be installed in the editor, or its peripheral cells
+    // can poison ImportFootprint.Read on the next save load.
+    internal static int ValidateDocumentGeometry(StructureFile file, bool repairMissingAnchor = false)
+    {
+        int repaired = 0;
+        if (file.objects != null)
+        foreach (var item in file.objects)
+        {
+            if (item == null || string.IsNullOrWhiteSpace(item.prefabName))
+                throw new InvalidDataException("An object record or its prefab name is missing.");
+            if (ValidateFootprint(item, repairMissingAnchor)) repaired++;
+            if (!FitsAt(item, item.x, item.y))
+                throw new InvalidDataException($"Invalid coordinates or footprint for {item.prefabName}. Coordinates must be within ±10,000,000.");
+        }
+        if (file.supportingTerrain != null)
+        foreach (var item in file.supportingTerrain)
+            if (item == null || string.IsNullOrWhiteSpace(item.prefabName) ||
+                !Supported(item.x) || !Supported(item.y) || !Supported(item.z))
+                throw new InvalidDataException("A terrain record has a missing prefab name or coordinates outside ±10,000,000.");
+        return repaired;
+    }
+
+    internal static IEnumerable<(int X, int Y)> Cells(StructureObject item)
+        => CellsAt(item, item.x, item.y);
+
+    internal static IEnumerable<(int X, int Y)> CellsAt(StructureObject item, float worldX, float worldY)
+    {
+        int x = checked((int)Math.Round(worldX, MidpointRounding.ToEven));
+        int y = checked((int)Math.Round(worldY, MidpointRounding.ToEven));
+        yield return (x, y);
+        if (item.occupiedOffsets != null)
             foreach (var offset in item.occupiedOffsets)
-                yield return (checked(x + offset.x), checked(y + offset.y));
+                if (offset.x != 0 || offset.y != 0) yield return (checked(x + offset.x), checked(y + offset.y));
+    }
+
+    internal static void RequireInsideExportBounds(IEnumerable<StructureObject> objects,
+        int left, int top, int right, int bottom)
+    {
+        foreach (var item in objects)
+        foreach (var c in Cells(item))
+            if (c.X < left || c.X > right || c.Y > top || c.Y < bottom)
+                throw new InvalidDataException($"{item.prefabName} at ({item.x}, {item.y}) extends outside the export bounds at ({c.X}, {c.Y}). Expand the bounds to include it, or exclude its anchor. No file was written.");
     }
 
     internal static int ReplaceSlot(StructureFile file, string name,

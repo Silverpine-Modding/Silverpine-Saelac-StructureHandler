@@ -65,8 +65,10 @@ internal static class TerrainRepair
         {
             GameObject item = transform.gameObject;
             if (!item.activeInHierarchy || !item.scene.IsValid() || !item.scene.isLoaded) continue;
-            string prefab = SerializationManager.GetPrefabName(item);
-            if (!prefab.StartsWith("prefab_tile_", StringComparison.OrdinalIgnoreCase)) continue;
+            string prefab = Plugin.PrefabNameOf(item);
+            if (!StructurePlacementPolicy.IsTerrainRecordName(prefab) &&
+                item.GetComponent<GrassTileHandler>() == null &&
+                item.GetComponent<BathhouseSanityRegenerator>() == null) continue;
             // Native edging has a prefab_tile_ name, but it is not a ground
             // layer. Only exclude verified children tracked by OvergrowthTile.
             if (TerrainRepairDecorations.IsNativeOvergrowth(item)) continue;
@@ -140,6 +142,11 @@ internal static class TerrainRepair
     }
     private static bool Ready()
     {
+        if (StructureSaveState.EditBlockReason is string blocked)
+        {
+            DialogBox.Instance.DisplayTextNoDialog(blocked);
+            return false;
+        }
         if (busy || SerializationManager.loadingSave || StructureSaveState.Mutating || StructureSaveState.Unloading || Player.Instance == null)
         {
             DialogBox.Instance.DisplayTextNoDialog("Wait for the world to finish loading or importing before repairing terrain.");
@@ -214,6 +221,7 @@ internal static class TerrainRepair
         }
         catch (Exception error)
         {
+            if (error is ImportRecoveryException) StructureSaveState.MarkIncompleteRollback();
             Fail(error, backupDirectory);
         }
         finally { busy = false; }

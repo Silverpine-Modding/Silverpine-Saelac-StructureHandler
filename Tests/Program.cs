@@ -11,6 +11,43 @@ void Test(string name, Action body)
 void Check(bool value) { if (!value) throw new Exception("Assertion failed."); }
 EditorPerformanceChecks.Run(Test);
 PreviewSelectionChecks.Run(Test, Check);
+RoofPreviewChecks.Run(Test, Check);
+KitsuneInscriptionChecks.Run(Test, Check);
+TurfLifecycleChecks.Run(Test, Check);
+ReviewedBoundaryChecks.Run(Test, Check);
+SaveRecoveryChecks.Run(Test, Check);
+PrefabIdentityChecks.Run(Test, Check);
+WorldPrefabChecks.Run(Test, Check);
+EditorFileChecks.Run(Test, Check);
+Test("Projected world-tile ownership inspects the full footprint without moving its record", () =>
+{
+    var item = new StructureObject { x = 7.1f, y = 2.5f, occupiedOffsets = new() { new(), new() { x = 1 } } };
+    Check(StructurePlans.OwnerConflictAt(item, 48, 0) == null && StructurePlans.OwnerConflictAt(item, 49, 0) != null &&
+        StructurePlans.OwnerConflictAt(item, -51, -12) != null && StructurePlans.OwnerConflictAt(item, -50, -12) == null &&
+        StructurePlans.OwnerConflictAt(item, 49.5f, 0) == null && item.x == 7.1f && item.y == 2.5f);
+});
+Test("Preview footprint uses the translated and rotated child box, not its untransformed bounds", () =>
+{
+    var cells = PrefabFootprint.Box("child", 2, 1, 0, 3, -1, 0);
+    Check(cells.Select(c => (c.x,c.y)).ToHashSet().SetEquals(new[] { (2,0),(2,1),(2,2),(0,0) }));
+    var diagonal = PrefabFootprint.Box("diagonal", 0, 0, 3, 3, -.5, .5);
+    Check(diagonal.Select(c => (c.x,c.y)).ToHashSet().SetEquals(new[] { (-1,-1),(0,0),(1,1) }));
+});
+Test("Physical footprints keep lower edges inclusive and exclude empty box coverage", () =>
+{
+    var cells = PrefabFootprint.Box("two wide", 0, 0, 2, 0, 0, 1);
+    Check(cells.Select(c => (c.x,c.y)).ToHashSet().SetEquals(new[] { (-1,0),(0,0) }));
+    Check(cells.Select(c => (c.x,c.y)).SequenceEqual(PrefabFootprint.Box("mirrored", 0, 0, -2, 0, 0, -1).Select(c => (c.x,c.y))));
+    Check(PrefabFootprint.Box("no box area", 0, 0, 0, 0, 0, 1).Count == 0);
+    Check(PrefabFootprint.Sprite("empty fallback", 0, 0, 0, 0).Single().x == 0);
+});
+Test("Invalid and oversized generated footprints fail before scanning or allocating their full area", () =>
+{
+    Throws<InvalidDataException>(() => PrefabFootprint.Box("large", 0, 0, double.MaxValue, 0, 0, 5));
+    Throws<InvalidDataException>(() => PrefabFootprint.Sprite("nonfinite", 0, double.NaN, 1, 1));
+    Throws<InvalidDataException>(() => PrefabFootprint.Sprite("extra anchor", 1, 1, 101, 101));
+    Check(PrefabFootprint.Sprite("limit", 0, 0, 100, 100).Count == 10000);
+});
 T Throws<T>(Action body) where T : Exception
 {
     try { body(); } catch (T error) { return error; }
@@ -295,13 +332,12 @@ Test("Every accepted edge is honored across 500 seeded graphs", () =>
 Test("Invalid conflict indices fail explicitly", () =>
     Throws<ArgumentOutOfRangeException>(() => StructureAlgorithms.TryOrder(1, new[] { (2, 0) }, out _)));
 
-(int, int) TileOf(float x, float y) => ((int)Math.Floor((x + 50) / 100), (int)Math.Floor((y + 50) / 100));
 Test("Off-tile objects and support are split without duplicating records", () =>
 {
     var file = new StructureFile { name = "Bath" };
     file.objects.AddRange(new[] { new StructureObject { x = 0 }, new StructureObject { x = 100 } });
     file.supportingTerrain.AddRange(new[] { new SupportingTerrain { x = 0 }, new SupportingTerrain { x = 100 } });
-    var parts = StructurePlans.Partition(file, TileOf);
+    var parts = StructurePlans.Partition(file);
     Check(parts.Count == 2);
     Check(parts.Values.All(p => p.objects.Count == 1 && p.supportingTerrain.Count == 1 && p.name == "Bath"));
     Check(parts.Values.Sum(p => p.objects.Count) == file.objects.Count);
@@ -310,15 +346,15 @@ Test("World boundary anchors are assigned to one destination", () =>
 {
     var file = new StructureFile();
     foreach (float x in new[] { -50.001f, -50f, 49.999f, 50f }) file.objects.Add(new StructureObject { x = x });
-    var parts = StructurePlans.Partition(file, TileOf);
-    Check(parts[(-1, 0)].objects.Count == 1 && parts[(0, 0)].objects.Count == 2 && parts[(1, 0)].objects.Count == 1);
+    var parts = StructurePlans.Partition(file);
+    Check(parts.Count == 2 && parts[(0, 0)].objects.Count == 2 && parts[(1, 0)].objects.Count == 2);
 });
 Test("Import partitioning includes ordinary and bath water on separate world tiles", () =>
 {
     var file = new StructureFile();
     file.supportingTerrain.Add(new SupportingTerrain { prefabName = "prefab_tile_water", x = 100 });
     file.supportingTerrain.Add(new SupportingTerrain { prefabName = "prefab_tile_water_bathhouse" });
-    var parts = StructurePlans.Partition(file, TileOf);
+    var parts = StructurePlans.Partition(file);
     Check(parts.Count == 2 && parts[(0, 0)].supportingTerrain.Single().prefabName == "prefab_tile_water_bathhouse");
     Check(parts[(1, 0)].supportingTerrain.Single().prefabName == "prefab_tile_water");
     Check(file.supportingTerrain.Count == 2);
@@ -329,14 +365,14 @@ Test("Import partitioning keeps shallow-water overlays and their explicit floors
     {
         var file = new StructureFile { supportingTerrain = new() {
             new() { prefabName = water, x = 100 }, new() { prefabName = "prefab_tile_rock", x = 100 } } };
-        var parts = StructurePlans.Partition(file, TileOf);
+        var parts = StructurePlans.Partition(file);
         Check(parts.Count == 1 && parts[(1, 0)].supportingTerrain.Select(item => item.prefabName)
             .SequenceEqual(new[] { water, "prefab_tile_rock" }));
         Check(file.supportingTerrain.Count == 2);
     }
 });
 Test("Terrain-less empty imports have no destination mutations", () =>
-    Check(StructurePlans.Partition(new StructureFile(), TileOf).Count == 0));
+    Check(StructurePlans.Partition(new StructureFile()).Count == 0));
 Test("Terrain translations cannot accumulate fractional drift", () =>
 {
     Check(StructureAlgorithms.IsGridTranslation(-15, 24));
@@ -464,6 +500,9 @@ Test("JSON replacement keeps the previous file and leaves no temporary files", (
     try
     {
         StructureJsonFile.Write(path, "first"); StructureJsonFile.Write(path, "second");
+        bool refused = false;
+        try { StructureJsonFile.Write(path, "racing creator", allowOverwrite: false); } catch (IOException) { refused = true; }
+        Check(refused);
         Check(File.ReadAllText(path) == "second" && File.ReadAllText(path + ".bak") == "first");
         Check(Directory.GetFiles(directory, "*.tmp").Length == 0);
     }
@@ -613,7 +652,7 @@ Test("Planning-only files cause no import destination or terrain mutations", () 
 {
     var file = new StructureFile();
     file.planningTiles.Add(new PlanningTile { x = 50, y = 100 });
-    Check(StructurePlans.Partition(file, TileOf).Count == 0);
+    Check(StructurePlans.Partition(file).Count == 0);
     Check(file.objects.Count == 0 && file.supportingTerrain.Count == 0 && file.occupiedPositions.Count == 0);
 });
 Test("Planning outside a real structure never expands its import footprint", () =>
@@ -621,7 +660,7 @@ Test("Planning outside a real structure never expands its import footprint", () 
     var file = new StructureFile();
     file.objects.Add(new StructureObject { x = 0, y = 0 });
     file.planningTiles.Add(new PlanningTile { x = 500, y = -100 });
-    var parts = StructurePlans.Partition(file, TileOf);
+    var parts = StructurePlans.Partition(file);
     Check(parts.Count == 1 && parts[(0, 0)].objects.Count == 1);
     Check(parts[(0, 0)].planningTiles.Count == 0);
 });
@@ -663,7 +702,7 @@ Test("Refreshing moved supplemental scenery removes its previous spawn point", (
     var ledger = new StructurePersistenceLedger(); var first = Scenery("p", 0);
     ledger.RecordReplacement(Array.Empty<StructureObject>(), new[] { first });
     var moved = Scenery("p", 4); moved.signMessage = "Edited after import";
-    ledger.Move(StructurePersistenceLedger.Key(first), moved);
+    ledger.ReplaceTracked(new[] {StructurePersistenceLedger.Key(first)}, new[] {moved});
     Check(ledger.Objects.Count == 1 && ledger.Objects.Values.Single().x == 4);
     Check(ledger.Objects.Values.Single().signMessage == "Edited after import");
 });
@@ -680,7 +719,7 @@ Test("Intentional regeneration clears only that world tile's terrain and clearan
     var ledger = new StructurePersistenceLedger();
     ledger.RecordReplacement(new[] { Scenery("original", 0), Scenery("original", -100) },
         new[] { Scenery("import", 0), Scenery("import", -100) });
-    ledger.ClearWhere(item => TileOf(item.x, item.y) == (0, 0));
+    ledger.ClearWhere(item => StructurePlans.TileOf(item.x, item.y) == (0, 0));
     Check(ledger.Objects.Count == 1 && ledger.Cleared.Count == 1);
     Check(ledger.Objects.Values.Single().x == -100 && ledger.Cleared.Values.Single().x == -100);
 });
@@ -855,7 +894,7 @@ foreach (string water in new[] { "prefab_tile_water", "prefab_tile_water_lake", 
         var file = new StructureFile { supportingTerrain = new() { waterRecord } };
         // This remains importable even when the export policy excludes that prefab.
         Check(!WaterExportPolicy.ShouldIncludeTerrain(water, false));
-        var parts = StructurePlans.Partition(file, TileOf);
+        var parts = StructurePlans.Partition(file);
         Check(parts.Count == 1 && ReferenceEquals(parts[(1, 0)].supportingTerrain.Single(), waterRecord));
         var cells = DestinationSupportPolicy.GetUnreplacedCells(parts[(1, 0)], new[] { (100, 12) }, CellOf);
         Check(cells.Contains((100, 12)) == (StructurePlacementPolicy.Slot(water) == PlacementSlot.WaterOverlay));
@@ -944,7 +983,7 @@ foreach (string water in new[] { "prefab_tile_water_bathhouse", "prefab_tile_wat
     {
         var file = new StructureFile { supportingTerrain = new() {
             new() { prefabName = water, x = 100 }, new() { prefabName = "prefab_tile_rock", x = 0 } } };
-        var parts = StructurePlans.Partition(file, TileOf);
+        var parts = StructurePlans.Partition(file);
         Check(DestinationSupportPolicy.GetUnreplacedCells(parts[(0, 0)], new[] { (0, 0) }, CellOf).Count == 0);
         Check(DestinationSupportPolicy.GetUnreplacedCells(parts[(1, 0)], new[] { (100, 0) }, CellOf).SetEquals(new[] { (100, 0) }));
     });
@@ -1017,7 +1056,7 @@ Test("Queued import parts decide ground support from their own destination cells
         new() { prefabName = "prefab_furniture_well", x = 0 },
         new() { prefabName = "prefab_furniture_well", x = 100 }
     }, supportingTerrain = new() { new() { prefabName = "prefab_tile_rock", x = 0 } } };
-    var parts = StructurePlans.Partition(file, TileOf);
+    var parts = StructurePlans.Partition(file);
     Check(DestinationSupportPolicy.GetUnreplacedCells(parts[(0, 0)], new[] { (0, 0) }, CellOf).Count == 0);
     Check(DestinationSupportPolicy.GetUnreplacedCells(parts[(1, 0)], new[] { (100, 0) }, CellOf).Contains((100, 0)));
 });
@@ -1403,6 +1442,18 @@ Test("Nondefault collider indices are rejected instead of silently overwritten",
     Throws<InvalidDataException>(() => FurnitureCollision.SetEnabled(item, false));
     Check(item.components.Single().dataBase64 == "AA==");
 });
+Test("Placement reads only the last native collider override for the same path and index", () =>
+{
+    var records = new List<StructureComponent>
+    {
+        new() { type = "TurfCollider", hierarchyPath = "1", componentIndex = -1, dataBase64 = "AA==" },
+        new() { type = "TurfCollider", hierarchyPath = "1", componentIndex = 1, dataBase64 = "AA==" },
+        new() { type = "TurfCollider, Assembly-CSharp", hierarchyPath = "1", componentIndex = 0, dataBase64 = "AQ==" },
+        new() { type = "TurfCollider, OtherMod", hierarchyPath = "1", componentIndex = 0, dataBase64 = "AA==" }
+    };
+    Check(!FurnitureCollision.BlocksAt(records, "1", 0, false) && FurnitureCollision.BlocksAt(records, "1", 1, true) &&
+        FurnitureCollision.BlocksAt(records, "", 0, false) && !FurnitureCollision.BlocksAt(records, "1", -1, true));
+});
 Test("Furniture collision survives JSON, independent copies, and undo redo", () =>
 {
     var options = new System.Text.Json.JsonSerializerOptions { IncludeFields = true };
@@ -1422,7 +1473,7 @@ Test("Queued structure partitioning retains native furniture collision records",
     var item = new StructureObject { prefabName = "prefab_furniture_table_wood", x = 100, y = 10 };
     FurnitureCollision.SetEnabled(item, false);
     var file = new StructureFile { objects = new() { item } };
-    var parts = StructurePlans.Partition(file, TileOf);
+    var parts = StructurePlans.Partition(file);
     var queued = parts[(1, 0)].objects.Single();
     Check(FurnitureCollision.TryReadEnabled(queued.components, false, out var enabled) && !enabled);
     Check(queued.components.Single().dataBase64 == "AQ==");
@@ -1434,7 +1485,7 @@ Test("East 9: queued import carries all nine destination floors including the fe
     var file = new StructureFile { supportingTerrain = cells.Select(p => new SupportingTerrain
         { x = p.Item1, y = p.Item2, prefabName = "prefab_tile_grass_overgrowth" }).ToList(),
         objects = new() { new() { x = 91, y = 40, prefabName = "prefab_nature_felledtree" } } };
-    var part = StructurePlans.Partition(file, TileOf)[(1, 0)];
+    var part = StructurePlans.Partition(file)[(1, 0)];
     Check(DestinationSupportPolicy.GetUnreplacedCells(part, cells, CellOf).SetEquals(cells));
     part.supportingTerrain.Add(new() { x = 91, y = 40, prefabName = "prefab_tile_dirt_dry" });
     Check(StructurePlacementPolicy.FindConflict(part) == null);

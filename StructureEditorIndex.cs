@@ -12,6 +12,11 @@ internal sealed partial class StructureEditorUI
     private bool placementIndexDirty = true;
     private int placementRevision;
 
+    // Native TurfCollider and TileTags register the child's final world
+    // position, not the sum of two independently rounded positions.
+    private static Vector2Int RegisteredCell(Vector2 origin, Vector2 offset) =>
+        Vector2Int.RoundToInt(origin + offset);
+
     private void EnsurePlacementIndex()
     {
         if (!placementIndexDirty) return;
@@ -28,23 +33,30 @@ internal sealed partial class StructureEditorUI
     {
         var cells = new HashSet<(int, int)>();
         string name;
-        Vector2Int anchor;
+        Vector2 origin;
         if (record is StructureObject item)
         {
             name = item.prefabName;
-            anchor = Vector2Int.RoundToInt(new Vector2(item.x, item.y));
+            origin = new Vector2(item.x, item.y);
             foreach (var cell in GetObjectCells(item)) cells.Add((cell.x, cell.y));
         }
         else
         {
             var tile = (SupportingTerrain)record;
-            name = tile.prefabName; anchor = new Vector2Int(tile.x, tile.y);
+            name = tile.prefabName; origin = new Vector2(tile.x, tile.y);
         }
+        var anchor = Vector2Int.RoundToInt(origin);
         cells.Add((anchor.x, anchor.y));
         // A child collider can extend beyond the serialized/sprite footprint.
         // Index it independently so optimized checks retain native restrictions.
-        foreach (var collider in Profile(name).Colliders)
-            cells.Add((anchor.x + collider.Offset.x, anchor.y + collider.Offset.y));
+        var profile = Profile(name);
+        void Add(Vector2 offset)
+        {
+            var cell = RegisteredCell(origin, offset);
+            cells.Add((cell.x, cell.y));
+        }
+        foreach (var collider in profile.Colliders) Add(collider.Offset);
+        foreach (var offset in profile.WaterOffsets) Add(offset);
         placementIndex.Set(record, cells);
     }
 

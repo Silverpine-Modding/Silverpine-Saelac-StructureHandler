@@ -77,6 +77,12 @@ internal sealed partial class StructureEditorUI
 
     private void ForgetPrefabPreview(string name)
     {
+        if (roofPrefabs.TryGetValue(name, out var knownRoof) && knownRoof == null && Plugin.ResolvePrefab(name) != null)
+        {
+            roofPrefabs.Remove(name);
+            roofMapDirty = true;
+            previewSurfaceValid = false;
+        }
         if (spritePreviews.TryGetValue(name, out var parts))
         {
             var oldParts = new HashSet<SpritePreview>(parts);

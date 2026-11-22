@@ -20,19 +20,11 @@ namespace StructureHandler;
 
 internal static class ResourceRegeneration
 {
-    private static readonly Dictionary<string, RegeneratingResourceMarker> Markers =
+    private static Dictionary<string, RegeneratingResourceMarker> Markers =
         new(StringComparer.OrdinalIgnoreCase);
     internal static IEnumerable<RegeneratingResourceMarker> Records => Markers.Values;
     internal static void Reset() => Markers.Clear();
-    internal static void Restore(IEnumerable<RegeneratingResourceMarker> markers)
-    {
-        Markers.Clear();
-        foreach (var marker in markers)
-            if (marker != null && !string.IsNullOrWhiteSpace(marker.prefabName) &&
-                StructureAlgorithms.IsFinite(marker.x) && StructureAlgorithms.IsFinite(marker.y) &&
-                StructureAlgorithms.IsFinite(marker.z))
-                Markers[Key(marker)] = marker;
-    }
+    internal static void Restore(Dictionary<string, RegeneratingResourceMarker> validated) => Markers = validated;
     internal static void ReplaceImportedResources(HashSet<Vector2Int> occupied,
         IEnumerable<GameObject> importedObjects)
     {
@@ -79,9 +71,15 @@ internal static class ResourceRegeneration
                      item.GetComponentInChildren<Sign>(true) != null))
             {
                 var position = item.transform.GetVector2IntPosition();
-                foreach (var offset in StructureEditorUI.GetPrefabOccupiedOffsets(
-                             SerializationManager.GetPrefabName(item),
-                             item.GetComponentInChildren<Turnable>(true)?.GetIndex() ?? -1))
+                List<StructurePosition> offsets;
+                try { offsets = StructureEditorUI.GetPrefabOccupiedOffsets(Plugin.PrefabNameOf(item),
+                    item.GetComponentInChildren<Turnable>(true)?.GetIndex() ?? -1); }
+                catch (InvalidDataException e)
+                {
+                    Plugin.Log.LogWarning($"Resource regeneration skipped for {tile}: {e.Message}");
+                    return; // Cannot safely spawn into an unknown building footprint.
+                }
+                foreach (var offset in offsets)
                     occupied.Add(position + new Vector2Int(offset.x, offset.y));
             }
         }
@@ -101,14 +99,16 @@ internal static class ResourceRegeneration
                     ? ObjectPool.Claim(prefab, new Vector3(marker.x, marker.y, marker.z))
                     : UnityEngine.Object.Instantiate(prefab,
                         new Vector3(marker.x, marker.y, marker.z), prefab.transform.rotation);
-                foreach (var registrar in spawned.GetComponentsInChildren<TurfRegistrar>(true))
-                    registrar.Register();
+                ImportedPrefabLifecycle.Prepare(spawned, prefab.name);
+                if (!spawned.activeInHierarchy)
+                    throw new InvalidOperationException("Resource prefab did not activate: " + marker.prefabName);
+                StructureTransfer.RegisterRestoredObjects(new[] { spawned });
                 occupied.Add(Cell(marker));
                 marker.lastCheckedDay = day;
             }
             catch (Exception exception)
             {
-                if (spawned != null) StructureTransfer.RemoveGameObjects(new[] { spawned });
+                if (spawned != null) StructureTransfer.DiscardCreatedObjects(new[] { spawned });
                 Plugin.Log.LogError("Could not restore imported resource: " + exception);
             }
         }
@@ -124,7 +124,7 @@ internal static class ResourceRegeneration
         var position = gameObject.transform.position;
         marker = new RegeneratingResourceMarker
         {
-            prefabName = SerializationManager.GetPrefabName(gameObject),
+            prefabName = Plugin.PrefabNameOf(gameObject),
             x = position.x, y = position.y, z = position.z
         };
         return !string.IsNullOrWhiteSpace(marker.prefabName);
@@ -132,5 +132,5 @@ internal static class ResourceRegeneration
     private static Vector2Int Cell(RegeneratingResourceMarker marker) =>
         new(Mathf.RoundToInt(marker.x), Mathf.RoundToInt(marker.y));
     private static string Key(RegeneratingResourceMarker marker) =>
-        marker.prefabName + "|" + Cell(marker).x + "|" + Cell(marker).y;
+        PreparedWorldState.ResourceKey(marker);
 }

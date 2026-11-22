@@ -84,6 +84,23 @@ GUI.BeginEvent(EventType.KeyDown, KeyCode.Return);
 Check(ui.Coordinate(new object(), "Y", "10") == "10", "Selecting a different record cannot apply the previous record's draft");
 Check(GUI.UnhandledSubmitKeys == 0, "Coordinate actions are captured before the native text widget can consume them");
 
+string prefab = "prefab_old";
+void FocusPrefab() => GUIUtility.keyboardControl = "StructureHandler.prefab".GetHashCode();
+FocusPrefab();
+GUI.BeginEvent(EventType.KeyDown, typedText: "prefab_new");
+Check(ui.Prefab(owner, prefab) == prefab, "Typing a prefab name does not change the record or trigger placement validation");
+GUI.BeginEvent(EventType.KeyDown, KeyCode.KeypadEnter);
+Check(ui.Prefab(owner, prefab) == "prefab_new" && GUIUtility.keyboardControl == 0, "Keypad Enter submits the whole selected prefab ID once");
+FocusPrefab();
+GUI.BeginEvent(EventType.KeyDown, typedText: "mistake"); ui.Prefab(owner, prefab);
+GUI.BeginEvent(EventType.KeyDown, KeyCode.Escape); ui.Prefab(owner, prefab);
+GUI.BeginEvent(EventType.KeyDown, KeyCode.Return);
+Check(ui.Prefab(owner, prefab) == prefab, "Escape discards a prefab draft without changing the old ID");
+FocusPrefab();
+GUI.BeginEvent(EventType.KeyDown, typedText: "other_record"); ui.Prefab(owner, prefab);
+GUI.BeginEvent(EventType.KeyDown, KeyCode.Return);
+Check(ui.Prefab(new object(), "second") == "second", "A prefab draft cannot follow a selection change");
+
 void Pointer(EventType type, float mouseX, float mouseY)
 {
     GUI.BeginEvent(type);
@@ -165,6 +182,7 @@ namespace StructureHandler
         internal void BeginInput() => BeginEditorTextInput();
         internal void ResetInput() => ClearEditorTextInput();
         internal string Text(string value, string name) => EditorTextField(value, name);
+        internal string Prefab(object owner, string name) => PrefabTextField(owner, name);
         internal string Coordinate(object owner, string axis, string current, bool wholeNumber = false)
             => CoordinateTextField(owner, axis, current, wholeNumber);
         private static bool TryFloat(string text, out float value) =>

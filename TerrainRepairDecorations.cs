@@ -22,14 +22,14 @@ internal static class TerrainRepairDecorations
     {
         // Do not trust the name alone: an editor-placed prefab or a similarly
         // named mod object is not disposable decoration owned by this grass.
-        if (SerializationManager.GetPrefabName(item) != GrassEdging ||
+        if (Plugin.PrefabNameOf(item) != GrassEdging ||
             item.transform.parent == null || item.transform.childCount != 0 ||
             item.transform.localScale != Vector3.one || item.hideFlags != HideFlags.None) return false;
         GameObject parent = item.transform.parent.gameObject;
-        if (SerializationManager.GetPrefabName(parent) != TerrainRepairPolicy.Grass) return false;
+        if (Plugin.PrefabNameOf(parent) != TerrainRepairPolicy.Grass) return false;
         var owner = parent.GetComponent<OvergrowthTile>();
         if (owner == null || !owner.enabled || Prefab?.GetValue(owner) is not GameObject prefab ||
-            SerializationManager.GetPrefabName(prefab) != GrassEdging ||
+            Plugin.PrefabNameOf(prefab) != GrassEdging ||
             Instances?.GetValue(owner) is not List<GameObject> owned || !owned.Contains(item)) return false;
         var components = item.GetComponents<Component>();
         if (components.Length != Components.Count || components.Any(c => c == null) ||

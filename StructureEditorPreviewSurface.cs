@@ -12,7 +12,7 @@ internal sealed partial class StructureEditorUI
     private bool capturingPreview, previewBatchOpen, previewSurfaceValid, previewSurfaceFailed;
     private int previewVisualRevision;
     private (int Visual, int Edit, int Zones, int Object, int Terrain, bool Footprints,
-        bool ZoneColors, bool Planning, Vector2 Size, Vector2 Center, Vector2 Origin, float Zoom, float Scale) previewSurfaceKey;
+        bool ZoneColors, bool Planning, bool Roofs, Vector2 Size, Vector2 Center, Vector2 Origin, float Zoom, float Scale) previewSurfaceKey;
 
     // Cache the composed viewport, not the document. Pan/zoom/edits rebuild it;
     // an idle repaint is one texture draw regardless of the number of records.
@@ -20,9 +20,10 @@ internal sealed partial class StructureEditorUI
     {
         EnsureRenderOrder(); // Also enqueue new loose-item previews without generating them here.
         ProcessItemPreviewQueue();
+        EnsureRoofMap(); // Resolve prefab metadata before opening the GL batch.
         float scale = GUI.matrix.MultiplyVector(Vector3.right).magnitude;
         var key = (previewVisualRevision, editRevision, zoneRevision, selectedObject, selectedTerrain,
-            showFootprintOverlay, showZoneColors, showPlanning, viewport.size, center, previewOrigin, zoom, scale);
+            showFootprintOverlay, showZoneColors, showPlanning, showRoofOverlay, viewport.size, center, previewOrigin, zoom, scale);
         if (!previewSurfaceFailed)
         {
             try
@@ -59,6 +60,7 @@ internal sealed partial class StructureEditorUI
         DrawGrid(viewport, center);
         DrawRecords(viewport, center);
         DrawPlanningOverlay(viewport, center);
+        DrawRoofOverlay(viewport, center);
         DrawWorldTileOutlines(viewport, center);
         DrawTopLeftMarker(center);
     }

@@ -11,6 +11,10 @@ internal sealed class PendingTileImport
     public int x;
     public int y;
     public StructureFile structure = new();
+    // Display names are not operation IDs: different files can share one.
+    public string importId = "";
+    // Only for old, ambiguous boundary fragments. Each record is stored once.
+    public List<StructureFile>? boundaryTail;
 }
 
 [Serializable]
@@ -70,6 +74,17 @@ internal sealed class StructureFile
     // Editor-only annotations, never occupied terrain or importable objects.
     public List<PlanningTile> planningTiles = new();
     public string serializedObjectsBase64 = "";
+
+    // Saving is synchronous. Share the unmodified object/terrain lists, but
+    // keep derived metadata out of the editable undo/redo history.
+    internal StructureFile WithSaveHeader(string fileName, List<StructurePosition> occupied)
+    {
+        var copy = (StructureFile)MemberwiseClone();
+        copy.name = fileName;
+        copy.occupiedPositions = occupied;
+        copy.serializedObjectsBase64 = "";
+        return copy;
+    }
 }
 
 [Serializable]
@@ -90,6 +105,10 @@ internal sealed class StructurePosition
 [Serializable]
 internal sealed class SupportingTerrain
 {
+    // Placement proposals edit scalars only. Never mutate the shared component
+    // payload; keeping it avoids deserializing inventories while painting.
+    internal SupportingTerrain PlacementDraft() => (SupportingTerrain)MemberwiseClone();
+
     public string prefabName = "";
     public int x;
     public int y;
@@ -104,6 +123,9 @@ internal sealed class SupportingTerrain
 [Serializable]
 internal sealed class StructureObject
 {
+    // Replace the footprint list on rotation; never edit the shared list in place.
+    internal StructureObject PlacementDraft() => (StructureObject)MemberwiseClone();
+
     public string prefabName = "";
     public float x;
     public float y;

@@ -1,21 +1,143 @@
-# Structure Handler 1.2.29
+# Structure Handler 1.2.38
 
 Created by **Saelac and ChatGPT**.
 
-This update preserves the destination terrain under decorative edges and
-transparent ice, including on queued imports.
+This update fixes incorrect placement previews and edits that could alter a record after rejection.
 
 ## Requirements and installation
 
 - Silverpine 1.7.3 and BepInEx 5.
 - **[ModdingTools 1.12.0 or newer](https://github.com/Silverpine-Modding/Silverpine-Saelac-Modding-Tools/releases)** must be installed separately. This requirement is enforced by the plugin.
-- Close the game. Extract `StructureHandler-1.2.29.zip` into
+- Close the game. Extract `StructureHandler-1.2.38.zip` into
   `BepInEx/plugins/StructureHandler/`, replacing the previous DLL, or replace
   that DLL with the standalone download. Do not keep a second copy elsewhere
   under `BepInEx/plugins`.
 - Back up your saves and structure JSONs before updating. Keep each save's
   `.sav.moddingtools` companion alongside its `.sav` file when copying or
   restoring saves. This download does not contain or update ModdingTools.
+
+## New in 1.2.38
+
+- Rejected terrain repaints, moves, rotations and prefab changes leave the original record
+  intact. Invalid brush Z values no longer silently place at zero. Repainting unchanged
+  terrain does not mark it edited.
+- Press Enter to apply a selected prefab name. Manual placement and prefab changes
+  check availability and native save compatibility. Replacement rechecks saved component
+  bindings and uses the new prefab's footprint instead of the old one.
+- Placement now uses the final position of child colliders and submerged-tile tags,
+  and reads each native collider's own saved passability flag.
+  A sprite-only rotation no longer rotates a fixed box footprint; child boxes use
+  their actual offset, scale and orientation. Oversized generated footprints are
+  refused instead of enumerating an unbounded area.
+- Individual multi-cell objects must fit on one world tile on placement, move and
+  save, as already required by import. Existing JSONs are not automatically rewritten.
+
+## Changes in 1.2.37
+
+- Saving an open JSON now detects external edits and deletions, including
+  same-size edits with unchanged timestamps. Overwrite confirmation is checked
+  again before writing; **Keep editing** leaves both versions intact.
+- Save and Save As no longer create a header-only undo step or discard redo
+  history. Failing to combine unreadable files no longer clears the item draft.
+- Switching documents or closing the editor disarms Quick Delete and placement
+  brushes. Drags that started outside the preview cannot paint or erase; releasing
+  outside the preview or losing focus ends the stroke.
+
+## Changes in 1.2.36
+
+- Validate native save IDs before replacing terrain or writing an export. An
+  object that would disappear or load as another prefab is rejected; an import
+  whose custom callback leaves the new object inactive rolls back.
+- Preserve numbered asset names when they belong to real templates, not just
+  scene copies. Fallback lookup ignores child objects and ambiguous root names.
+  Missing editor metadata can be retried when a mod registers its prefab later.
+- Honor registered aliases when matching scenery, resource markers, and furniture
+  overrides. If two distinct saved IDs collapse onto one record, keep the original
+  companion rather than guessing which data should win.
+- Match component data to its declared assembly. Unambiguous legacy names still
+  work; duplicate records keep the last value without running a component's load
+  callback twice. Editing a native field leaves same-named components from other mods alone.
+- Protect characters, their child objects, and persistent systems from terrain
+  replacement, including vegetation clearing. Empty cells in bounded exports no
+  longer allocate temporary turf lists.
+
+## New in 1.2.35
+
+- Validate the companion's flags, resources, appearances, queued record ownership
+  and scenery before publishing them. A malformed record no longer partly applies a save.
+  Imports and tile-flag edits are refused when Structure Handler rejects the payload.
+- Record moved furniture overrides before native tile unload. Save switching and
+  pool release remove the plugin's temporary sprites and extenders; stale callbacks
+  cannot delete a replacement object's override.
+- A failed import no longer records untouched originals for a future save switch.
+  A successful rollback rebinds appearance records and the shared market board.
+- A recoverable queued import failure keeps the queue in order without skipping
+  existing-tile maintenance. If rollback itself fails, imports and duplicate-terrain
+  repairs stop until you reload. Reload your last good save without saving the damaged session.
+- Choosing “Decide on a later visit” on an old boundary import no longer asks
+  again at midnight while you're still on the same world tile.
+  Import overwrite decisions from a previous save cannot apply in the newly loaded save.
+
+## New in 1.2.34
+
+- New queued sections remember which import they came from. If older same-name
+  sections converge on the same world tile and their origin cannot be proven,
+  choose whether to import them together or in order. Deferring keeps both.
+- A blueprint may still span world tiles. If one object's occupied cells cross
+  the boundary, import now identifies the object before editing either tile.
+  A failed local import no longer queues that blueprint's distant sections.
+- Invalid coordinates and out-of-range footprint cells are rejected before
+  they can produce an unreadable save. Failed editor writes keep the current
+  document and its unsaved edits; a new file never overwrites a concurrent creation.
+- Swapping the positions of tracked scenery or furniture no longer loses a
+  supplemental record or appearance override on save.
+- Removing a furniture range override also removes the interaction component
+  created for it, without removing components supplied by a prefab or another mod.
+- A missing rotation sprite falls back to the anchor cell instead of throwing
+  during footprint lookup. Missing prefabs and sprite entries are retried.
+
+## New in 1.2.33
+
+- Use the rounded turf cell for ownership of fractional placements and correct
+  older queued sections on load. Existing live furniture is not repositioned.
+- Never restore a previous save's generated wilderness scenery on a save switch.
+  Regeneration also discards any remembered original for that world tile.
+- Refuse imports with an explicit footprint missing its anchor. Open and save
+  that JSON in the editor to add the anchor. Bounded exports report crossing
+  objects before writing or overwriting a file.
+- Capture the original shed at scene initialization, not on opening the menu;
+  later additions no longer become part of the exclusion.
+- Duplicate grass repair now treats Terrain Construction snowy layers as mixed
+  terrain and leaves those cells untouched.
+- Combining exports compares the entire saved record, preserves intentional
+  stacks, and flags exclusive-slot conflicts rather than losing either edit.
+
+## New in 1.2.32
+
+- Skip the second removal of an already-unregistered, inactive pooled object.
+  A replacement at the same coordinate is left alone, and a reused grass or
+  tree instance still unregisters normally. No save repair or reimport is needed.
+- Register only active prefab branches when restoring imports or regrowing
+  resources. Clean up newly created inactive clones if restoration fails.
+- A lighting refresh failure after a successful import no longer leaves it
+  queued for replay. If a queued structure fails validation, it and subsequent
+  entries keep their order without blocking maintenance of the existing tile.
+
+## New in 1.2.31
+
+- Store custom Kitsune statue inscriptions, including deliberately blank text,
+  with each statue's native record. Rotation and ownership are unchanged, and
+  no separate save-data entry or second statue is needed.
+- Existing structure JSONs still work. Reimport the edited JSON once if an older
+  save has already lost the inscription; this will replace the imported area as
+  usual. Unedited statues keep their prefab's default text.
+
+## New in 1.2.30
+
+- Toggle **Roof Overlay** in the preview toolbar to distinguish roofed, outdoor
+  and unknown cells. Hover for a text readout. Coverage uses native roof tags
+  at their actual positions, including Terrain Construction roof children and
+  saved de-roofed floors. No structure file, save or game tile is modified.
 
 ## New in 1.2.29
 

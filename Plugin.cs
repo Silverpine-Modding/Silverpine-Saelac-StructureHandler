@@ -27,7 +27,7 @@ public sealed class Plugin : BaseUnityPlugin
 {
     public const string PluginGuid = "renegadex.silverpine.customstructures";
     public const string PluginName = "Structure Handler";
-    public const string PluginVersion = "1.2.29";
+    public const string PluginVersion = "1.2.38";
     public const int EditorApiVersion = 2;
 
     internal static ManualLogSource Log = null!;
@@ -37,9 +37,38 @@ public sealed class Plugin : BaseUnityPlugin
     internal static readonly HashSet<Vector2Int> BuildableWorldTiles = new();
     internal static string StructuresDirectory =>
         Path.Combine(Application.persistentDataPath, "custom structures");
-    private static readonly Dictionary<string, GameObject> PrefabFallbackCache =
-        new(StringComparer.OrdinalIgnoreCase);
+    private static readonly PrefabAssetIndex<GameObject> PrefabFallbackCache = new();
     private static bool prefabFallbacksIndexed;
+    private static float nextAssetScan;
+
+    internal static string PrefabNameOf(GameObject instance) =>
+        PrefabIdentity.FromInstance(instance.name, HasExactAssetName);
+    internal static GameObject? TemplateOf(GameObject instance) => ResolvePrefab(PrefabNameOf(instance));
+
+    // Only use aliases owned and resolved by the native registry/ModdingTools.
+    internal static Func<string,string> RegisteredNameResolver()
+    {
+        var names = new Dictionary<string,string>(StringComparer.Ordinal);
+        return id =>
+        {
+            if (names.TryGetValue(id, out var canonical)) return canonical;
+            if (Silverpine.ModdingTools.SerializablePrefabs.TryGetRegistration(id, out var direct))
+                return names[id] = direct.PrefabName;
+            var template = SerializationManager.loadingSave ? null : SerializationManager.GetPrefabFromName(id);
+            canonical = template != null && Silverpine.ModdingTools.SerializablePrefabs.TryGetRegistration(template.name, out var reg) &&
+                reg.Template == template ? reg.PrefabName : id;
+            return names[id] = canonical;
+        };
+    }
+
+    private static bool HasExactAssetName(string name)
+    {
+        if (!PrefabFallbackCache.ContainsName(name)) IndexAssetPrefabs();
+        return PrefabFallbackCache.ContainsName(name);
+    }
+
+    private static bool IsAssetRoot(GameObject item) =>
+        item != null && !item.scene.IsValid() && item.transform.parent == null && !string.IsNullOrWhiteSpace(item.name);
 
     internal static GameObject? ResolvePrefab(string prefabName)
     {
@@ -53,39 +82,49 @@ public sealed class Plugin : BaseUnityPlugin
             SerializationManager.GetPrefabFromName(prefabName);
         if (prefab != null)
             return prefab;
-        if (PrefabFallbackCache.TryGetValue(prefabName, out prefab))
+        if (Silverpine.ModdingTools.SerializablePrefabs.TryGetRegistration(prefabName, out var registered) && registered.Template != null)
+            return registered.Template;
+        prefab = PrefabFallbackCache.Get(prefabName);
+        if (prefab != null)
             return prefab;
+        // Unity's destroyed object compares equal to null but still occupies
+        // a dictionary entry. Rebuild instead of returning the dead wrapper.
+        if (!ReferenceEquals(prefab, null)) prefabFallbacksIndexed = false;
+        if (PrefabFallbackCache.ContainsName(prefabName))
+        {
+            IndexAssetPrefabs();
+            prefab = PrefabFallbackCache.Get(prefabName);
+            if (prefab != null) return prefab;
+            if (PrefabFallbackCache.ContainsName(prefabName)) return null;
+        }
 
         prefab = Resources.Load<GameObject>(prefabName);
-        if (prefab != null)
+        if (prefab != null && IsAssetRoot(prefab) && string.Equals(prefab.name, prefabName, StringComparison.OrdinalIgnoreCase))
         {
-            PrefabFallbackCache[prefabName] = prefab;
-            return prefab;
+            IndexAssetPrefabs();
+            PrefabFallbackCache.Add(prefab.name, prefab);
+            return PrefabFallbackCache.Get(prefabName);
         }
 
         IndexAssetPrefabs();
-        return PrefabFallbackCache.TryGetValue(prefabName, out prefab)
-            ? prefab
-            : null;
+        prefab = PrefabFallbackCache.Get(prefabName);
+        return prefab != null ? prefab : null;
     }
 
     private static void IndexAssetPrefabs()
     {
-        if (prefabFallbacksIndexed)
+        if (prefabFallbacksIndexed && Time.realtimeSinceStartup < nextAssetScan)
             return;
-        prefabFallbacksIndexed = true;
+        PrefabFallbackCache.Clear();
         foreach (GameObject candidate in
                  Resources.FindObjectsOfTypeAll<GameObject>())
         {
             // FindObjectsOfTypeAll also returns live scene instances. Only
             // scene-less assets are safe to treat as prefab templates.
-            if (candidate == null ||
-                candidate.scene.IsValid() ||
-                string.IsNullOrWhiteSpace(candidate.name) ||
-                PrefabFallbackCache.ContainsKey(candidate.name))
-                continue;
-            PrefabFallbackCache[candidate.name] = candidate;
+            if (IsAssetRoot(candidate)) PrefabFallbackCache.Add(candidate.name, candidate);
         }
+        prefabFallbacksIndexed = true;
+        nextAssetScan = Time.realtimeSinceStartup + 5f;
     }
 
     private static void ClearPrefabFallbacks(Scene _, LoadSceneMode __)
@@ -115,7 +154,7 @@ public sealed class Plugin : BaseUnityPlugin
         }
 
         return registered
-            .Concat(PrefabFallbackCache.Keys.Where(name =>
+            .Concat(PrefabFallbackCache.Names.Where(name =>
                 name.StartsWith(
                     "prefab_", StringComparison.OrdinalIgnoreCase)))
             .Where(name => !string.IsNullOrWhiteSpace(name))
@@ -158,6 +197,7 @@ public sealed class Plugin : BaseUnityPlugin
             typeof(BaseShedCapturePatch),
             PluginGuid + ".base-shed-capture");
         Harmony.CreateAndPatchAll(typeof(StructureSaveLoadPatch), PluginGuid + ".save-load");
+        KitsuneInscription.Install();
         Harmony.CreateAndPatchAll(typeof(StructureReleasedPoolSavePatch), PluginGuid + ".released-pool-save");
         Harmony.CreateAndPatchAll(typeof(StructurePrepareNativeSavePatch), PluginGuid + ".prepare-native-save");
         Harmony.CreateAndPatchAll(typeof(StructureRestoredGroundPatch), PluginGuid + ".restored-ground");
@@ -167,6 +207,7 @@ public sealed class Plugin : BaseUnityPlugin
         Harmony.CreateAndPatchAll(typeof(StructureMidnightPatch), PluginGuid + ".midnight");
         Harmony.CreateAndPatchAll(typeof(StructureSpriteRefreshPatch), PluginGuid + ".sprite-refresh");
         Harmony.CreateAndPatchAll(typeof(StructurePoolReleasePatch), PluginGuid + ".pool-release");
+        Harmony.CreateAndPatchAll(typeof(ReleasedTurfCleanupPatch), PluginGuid + ".released-turf-cleanup");
         Harmony.CreateAndPatchAll(typeof(PlayerBuildableSleepPatch), PluginGuid + ".worldtile-sleep");
         Harmony.CreateAndPatchAll(typeof(PlayerBuildablePickupPatch), PluginGuid + ".worldtile-pickup");
     }
@@ -230,10 +271,11 @@ public sealed class Plugin : BaseUnityPlugin
 
     }
 
-    internal static Vector2Int GetWorldTile(Vector2 position) =>
-        new(
-            Mathf.FloorToInt((position.x + 50f) / 100f),
-            Mathf.FloorToInt((position.y + 50f) / 100f));
+    internal static Vector2Int GetWorldTile(Vector2 position)
+    {
+        var tile = StructurePlans.TileOf(position.x, position.y);
+        return new Vector2Int(tile.X, tile.Y);
+    }
 
     internal void SelectWorldTile(
         string cornerName,

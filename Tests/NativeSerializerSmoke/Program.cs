@@ -16,7 +16,8 @@ var state = new StructureWorldState();
 state.protectedTiles.Add(new StructurePosition { x = -2, y = 1 });
 state.buildableTiles.Add(new StructurePosition { x = 0, y = 0 });
 state.resources.Add(new RegeneratingResourceMarker { prefabName = "prefab_herb", x = -205, y = 12, lastCheckedDay = 8 });
-state.pending.Add(new PendingTileImport { x = 1, y = 2 });
+state.pending.Add(new PendingTileImport { x = 1, y = 2, importId="pending-id",
+    boundaryTail=new() { new() { name="alternative", objects=new() { new() { prefabName="chair" } } } } });
 state.appearances.Add(new StructureAppearance { prefabName = "prefab_table", extender = true });
 state.supplementalObjects.Add(new StructureObject {
     prefabName = "prefab_tile_dirt_dry", x = -204, y = 110, z = 1, spriteVariantIndex = 2, lockSpriteVariant = true,
@@ -27,6 +28,9 @@ state.importedCells.Add(new StructurePosition { x = 47, y = 14 });
 string json = StringSerializationAPI.Serialize(typeof(StructureWorldState), state);
 var loaded = (StructureWorldState)StringSerializationAPI.Deserialize(typeof(StructureWorldState), json);
 Check(loaded.protectedTiles.Single().x == -2 && loaded.buildableTiles.Count == 1);
+Check(loaded.pending.Single().importId=="pending-id" &&
+    loaded.pending.Single().boundaryTail!.Single().objects.Single().prefabName=="chair");
+Console.WriteLine("PASS Queued section identities and undecided boundary records survive native JSON round trips.");
 Check(loaded.resources.Single().lastCheckedDay == 8 && loaded.pending.Count == 1 && loaded.appearances.Single().extender);
 Check(loaded.supplementalObjects.Single().x == -204 && loaded.supplementalObjects.Single().spriteVariantIndex == 2);
 Check(loaded.supplementalObjects.Single().components.Single().dataBase64 == "AQID");

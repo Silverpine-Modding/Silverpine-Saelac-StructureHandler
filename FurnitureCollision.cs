@@ -11,8 +11,32 @@ namespace StructureHandler;
 internal static class FurnitureCollision
 {
     private static bool IsRootCollider(StructureComponent component) =>
-        string.IsNullOrWhiteSpace(component.hierarchyPath) &&
-        (component.type ?? "").Split(',')[0].Trim() == "TurfCollider";
+        component != null && string.IsNullOrWhiteSpace(component.hierarchyPath) &&
+        SavedComponentBinding.IsNative(component.type, "TurfCollider");
+
+    // The editor toggle only operates on an unambiguous root. The placement
+    // preview must also read each child's own serialized passable flag.
+    internal static bool BlocksAt(List<StructureComponent>? records, string path, int index, bool prefabPassable)
+    {
+        if (index < 0 || records == null) return !prefabPassable; // custom collider payload is unknown
+        for (int i = records.Count - 1; i >= 0; i--)
+        {
+            var r = records[i];
+            if (r == null || (r.componentIndex == -1 ? 0 : r.componentIndex) != index ||
+                (string.IsNullOrWhiteSpace(r.hierarchyPath) ? "" : r.hierarchyPath) != path ||
+                !SavedComponentBinding.IsNative(r.type, "TurfCollider")) continue;
+            // Same last-write rule as the importer. Common cases need no allocation.
+            if (r.dataBase64 == "AA==") return true;
+            if (r.dataBase64 == "AQ==") return false;
+            try
+            {
+                var data = Convert.FromBase64String(r.dataBase64 ?? "");
+                return data.Length == 1 ? data[0] == 0 : !prefabPassable;
+            }
+            catch (FormatException) { return !prefabPassable; }
+        }
+        return !prefabPassable;
+    }
 
     internal static bool TryReadEnabled(
         IEnumerable<StructureComponent>? components, bool prefabPassable,
@@ -24,7 +48,7 @@ internal static class FurnitureCollision
             if (!IsRootCollider(component)) continue;
             // The UI supports one native root collider. Do not guess at a
             // changed/modded component layout or overwrite an unknown payload.
-            if (component.componentIndex > 0) return false;
+            if (component.componentIndex is not (-1 or 0)) return false;
             byte[] payload;
             try { payload = Convert.FromBase64String(component.dataBase64 ?? ""); }
             catch (FormatException) { return false; }

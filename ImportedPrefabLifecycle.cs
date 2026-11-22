@@ -7,6 +7,13 @@ namespace StructureHandler;
 
 internal static class ImportedPrefabLifecycle
 {
+    internal static void PrepareForPlacement(GameObject instance, string prefabName)
+    {
+        Prepare(instance, prefabName);
+        if (instance == null || !instance.activeInHierarchy)
+            throw new InvalidOperationException($"'{prefabName}' did not produce an active world object.");
+    }
+
     internal static void Prepare(GameObject instance, string prefabName)
     {
         if (!SerializablePrefabs.TryGetRegistration(prefabName, out var registration) ||

@@ -81,6 +81,7 @@ namespace UnityEngine
     public class Sprite { }
     public class Transform
     {
+        public int childCount => gameObject.FixtureChildCount;
         public GameObject gameObject = null!;
         public Transform parent = null!;
     }

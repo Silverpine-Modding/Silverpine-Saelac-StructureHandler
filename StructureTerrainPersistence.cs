@@ -9,11 +9,11 @@ namespace StructureHandler;
 
 internal static class StructureTerrainPersistence
 {
-    internal static readonly StructurePersistenceLedger Ledger = new();
+    internal static StructurePersistenceLedger Ledger { get; set; } = new();
     private static readonly Dictionary<string, GameObject> Live = new(StringComparer.OrdinalIgnoreCase);
     // Runtime-only undo of suppressed native scenery when loading another save
     // in the same scene. Never inject one save's edits into another save.
-    private static readonly Dictionary<string, (StructureObject Record, Scene Scene)> Suppressed = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly SuppressedSceneOriginals<Scene> Suppressed = new();
     private static bool changingSceneState;
 
     internal static bool NeedsSupplemental(GameObject item) =>
@@ -25,26 +25,28 @@ internal static class StructureTerrainPersistence
 
     private static bool SafeScenery(GameObject item) =>
         item != null && item.activeInHierarchy &&
-        item.GetComponent<EntityMover>() == null && item.GetComponent<NeuralNPC>() == null &&
-        item.GetComponent<IPersistentSerializableMonoBehavior>() == null &&
-        item.GetComponent<PersistentEntity>() == null && NeedsSupplemental(item);
+        NeedsSupplemental(item) && !WorldPrefabPolicy.ProtectedFromRemoval(item);
 
     private static string Key(GameObject item)
     {
         Vector3 p = item.transform.position;
-        return StructurePersistenceLedger.Key(SerializationManager.GetPrefabName(item), p.x, p.y, p.z);
+        return StructurePersistenceLedger.Key(Plugin.PrefabNameOf(item), p.x, p.y, p.z);
     }
 
-    internal static void RememberOriginals(IEnumerable<GameObject> originals)
+    internal static SuppressedSceneOriginals<Scene>.Batch StageOriginals(IEnumerable<GameObject> originals)
     {
+        var batch = Suppressed.Begin();
         foreach (var item in originals.Where(SafeScenery))
         {
+            // Only always-resident scene scenery can be undone across saves.
+            // A generated tile's original belongs to that world's generation,
+            // not to the next save that happens to use this Unity scene.
             string key = Key(item);
-            if ((Live.TryGetValue(key, out var tracked) && ReferenceEquals(tracked, item)) ||
-                Suppressed.ContainsKey(key)) continue;
-            var record = StructureTransfer.CreateObjectRecords(new[] { item }).Single();
-            Suppressed.Add(key, (record, item.scene));
+            if (Live.TryGetValue(key, out var tracked) && ReferenceEquals(tracked, item)) continue;
+            batch.Remember(key, PersistenceZone.IsInsideAnyPersistenceZone(item.transform.GetVector2IntPosition()),
+                item.scene, () => StructureTransfer.CreateObjectRecords(new[] { item }).Single());
         }
+        return batch;
     }
 
     internal static void RecordImport(IEnumerable<StructureObject> removedNonNative, IEnumerable<GameObject> created)
@@ -93,22 +95,25 @@ internal static class StructureTerrainPersistence
 
     internal static void RefreshLive()
     {
-        foreach (var pair in Live.ToArray())
+        var previous = Live.ToArray();
+        var current = new List<(string Key, StructureObject Record, GameObject Item, StructureSupplementalInstance Marker)>();
+        foreach (var pair in previous)
         {
             var item = pair.Value;
-            if (item == null || !item.activeInHierarchy)
-            {
-                Live.Remove(pair.Key);
-                Ledger.Objects.Remove(pair.Key);
-                continue;
-            }
-            // Read current state, rather than replaying the original export.
+            if (item == null || !item.activeInHierarchy) continue;
             var record = StructureTransfer.CreateObjectRecords(new[] { item }).Single();
-            string key = StructurePersistenceLedger.Key(record);
-            Ledger.Move(pair.Key, record);
-            if (!string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase)) Live.Remove(pair.Key);
-            Live[key] = item;
-            item.GetComponent<StructureSupplementalInstance>().Key = key;
+            var marker = item.GetComponent<StructureSupplementalInstance>();
+            if (marker == null) throw new InvalidOperationException("Missing supplemental tracking marker for " + record.prefabName);
+            current.Add((StructurePersistenceLedger.Key(record), record, item, marker));
+        }
+        // Snapshot first: neither a serialization failure nor two objects
+        // trading positions should remove another tracked object's record.
+        Ledger.ReplaceTracked(previous.Select(p => p.Key), current.Select(c => c.Record));
+        Live.Clear();
+        foreach (var c in current)
+        {
+            Live[c.Key] = c.Item;
+            c.Marker.Key = c.Key;
         }
     }
 
@@ -154,7 +159,7 @@ internal static class StructureTerrainPersistence
         originals.RemoveWhere(item => Live.TryGetValue(Key(item), out var tracked) && ReferenceEquals(item, tracked));
         var backup = StructureTransfer.CreateObjectRecords(originals);
         StructureTransfer.ValidateImportFiles(new[] { new StructureFile { objects = backup } });
-        RememberOriginals(originals);
+        var suppressed = StageOriginals(originals);
         var created = new List<GameObject>();
         changingSceneState = true;
         try
@@ -166,9 +171,10 @@ internal static class StructureTerrainPersistence
                 StructureTransfer.RegisterRestoredObjects(created);
                 ObjectPool.CallStarts();
                 AttachExisting(created);
+                suppressed.Commit();
             }, () =>
             {
-                StructureTransfer.RemoveGameObjects(created);
+                StructureTransfer.DiscardCreatedObjects(created);
                 StructureTransfer.RemoveGameObjects(originals.Where(item => item != null && item.activeInHierarchy));
                 var restored = new List<GameObject>();
                 StructureTransfer.InstantiateObjectRecords(backup, restored);
@@ -176,6 +182,7 @@ internal static class StructureTerrainPersistence
                 ObjectPool.CallStarts();
             }, "saved supplemental terrain");
         }
+        catch (ImportRecoveryException) { suppressed.Commit(); throw; }
         finally
         {
             changingSceneState = false;
@@ -203,6 +210,7 @@ internal static class StructureTerrainPersistence
         var discarded = Live.Where(pair => Ledger.Objects.TryGetValue(pair.Key, out var record) && Belongs(record))
             .Select(pair => pair.Value).ToArray();
         // Called only when the native regeneration-clear operation really ran.
+        Suppressed.ClearTile(Belongs);
         Ledger.ClearWhere(Belongs);
         changingSceneState = true;
         try { StructureTransfer.RemoveGameObjects(discarded); }
@@ -218,13 +226,24 @@ internal static class StructureTerrainPersistence
         {
             StructureTransfer.RemoveGameObjects(Live.Values.ToArray());
             Live.Clear();
-            // Only restore originals actually removed in this still-loaded scene.
-            // Entries from destroyed scenes are not transferable to another game.
-            foreach (var original in Suppressed.Values)
+            // Being in the same Unity scene does not mean a wilderness tile
+            // is loaded. Never replay its previous generation into a new save.
+            var originals = Suppressed.Restorable(s => s.IsValid() && s.isLoaded,
+                r => PersistenceZone.IsInsideAnyPersistenceZone(new Vector2Int(Mathf.RoundToInt(r.x), Mathf.RoundToInt(r.y)))).ToArray();
+            // An object can be present without a turf registrar, or its mod may
+            // now serialize it natively. Check live scene identity, not whether
+            // the old companion would be allowed to manage that instance.
+            var cells = originals.Select(o => (o.Scene, new Vector2Int(Mathf.RoundToInt(o.Record.x), Mathf.RoundToInt(o.Record.y)))).ToHashSet();
+            var missing = originals.GroupBy(o => o.Scene).ToDictionary(g => g.Key, g =>
+                g.Select(o => StructurePersistenceLedger.Key(o.Record)).ToHashSet(StringComparer.OrdinalIgnoreCase));
+            if (cells.Count != 0)
+                foreach (var t in UnityEngine.Object.FindObjectsOfType<Transform>())
+                    if (cells.Contains((t.gameObject.scene, t.GetVector2IntPosition())))
+                        missing[t.gameObject.scene].Remove(Key(t.gameObject));
+            foreach (var original in originals)
             {
                 var scene = original.Scene;
-                if (!scene.IsValid() || !scene.isLoaded ||
-                    FindSceneMatches(new[] { original.Record }).Count > 0) continue;
+                if (!missing[scene].Remove(StructurePersistenceLedger.Key(original.Record))) continue;
                 var restored = new List<GameObject>();
                 try
                 {
@@ -234,7 +253,7 @@ internal static class StructureTerrainPersistence
                 }
                 catch (Exception error)
                 {
-                    StructureTransfer.RemoveGameObjects(restored);
+                    StructureTransfer.DiscardCreatedObjects(restored);
                     Plugin.Log.LogError("Could not reset original scenery while switching saves: " + error);
                 }
             }

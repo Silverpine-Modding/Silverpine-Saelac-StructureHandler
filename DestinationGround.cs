@@ -43,7 +43,7 @@ internal static class DestinationGround
             if (item.GetComponentInChildren<WorldTileChanger>(true) != null) continue;
             var handler = item.GetComponent<GrassTileHandler>();
             if (!byCell.TryGetValue(cell, out var candidates)) byCell[cell] = candidates = new();
-            candidates.Add((SerializationManager.GetPrefabName(item), handler != null,
+            candidates.Add((Plugin.PrefabNameOf(item), handler != null,
                 handler == null ? null : Previous.GetValue(handler) as string, item.transform.position.z));
         }
 

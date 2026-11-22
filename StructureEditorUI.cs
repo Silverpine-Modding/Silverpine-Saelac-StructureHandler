@@ -39,6 +39,7 @@ internal sealed partial class StructureEditorUI :
     private readonly List<string> placementCatalog = new();
     private StructureFile? structure;
     private string currentPath = "";
+    private string currentRevision = StructureJsonFile.Missing;
     private string saveAsName = "";
     private string addPrefabName = "";
     private string brushPrefabName = "";
@@ -68,6 +69,7 @@ internal sealed partial class StructureEditorUI :
     private int movementReferenceSelection = int.MinValue;
     private Vector2Int? lastBrushCell;
     private Vector2Int? lastSelectionCell;
+    private readonly EditorPreviewGesture previewGesture = new();
     private bool open;
     private bool dirty;
     private float zoom = 22f;
@@ -142,20 +144,19 @@ internal sealed partial class StructureEditorUI :
         planningIndex.Clear();
         planningColors.Clear();
         ClearZoneColors();
-        StopPlanningBrush();
-        StopZoneBrush();
+        ResetDocumentTools();
         ClearSharedMetadata();
         structure = null;
+        currentPath = "";
+        currentRevision = StructureJsonFile.Missing;
         dirty = false;
         historyDirty = false;
         history.Reset(null);
         savedSnapshot = null;
-        pendingOverwritePath = null;
+        pendingOverwrite = null;
         InvalidateRenderOrder();
         selectedObject = -1;
         selectedTerrain = -1;
-        brushPrefabName = "";
-        lastBrushCell = null;
         ignorePlacementRules = false;
         gameObject.SetActive(false);
         ReleaseSession();
@@ -169,8 +170,7 @@ internal sealed partial class StructureEditorUI :
         spritePreviews.Clear();
         spriteVariants.Clear();
         ClearRenderCaches();
-        StopPlanningBrush();
-        StopZoneBrush();
+        ResetDocumentTools();
         ClearItemEditor();
         ClearZoneColors();
         ClearSharedMetadata();
@@ -183,15 +183,15 @@ internal sealed partial class StructureEditorUI :
         if (!open)
             return;
         editorFieldSequence = 0;
-        // Finish a text-edit group before another control/selection is used.
-        if (Event.current.type == EventType.MouseDown) FlushHistory();
-        if (Event.current.type == EventType.MouseUp)
+        // A release outside the preview (or a new press after a missed release)
+        // must end the old stroke even when another control consumes the event.
+        if (Event.current.rawType == EventType.MouseDown || Event.current.rawType == EventType.MouseUp)
         {
-            brushStroke = false;
-            lastPlanningCell = null;
-            zoneStroke.End();
+            previewGesture.Set(Event.current.button, false);
+            if (Event.current.button == 0) EndLeftPreviewStroke();
         }
-        if (pendingDiscardAction == null && pendingOverwritePath == null &&
+        if (Event.current.type == EventType.MouseDown) FlushHistory();
+        if (pendingDiscardAction == null && pendingOverwrite == null &&
             Event.current.type == EventType.KeyDown && Event.current.control && Event.current.keyCode == KeyCode.Z)
         {
             if (Event.current.shift) Redo(); else Undo();
@@ -214,7 +214,7 @@ internal sealed partial class StructureEditorUI :
             Texture2D.whiteTexture);
         GUI.color = oldBackdropColor;
         GUI.Box(new Rect(0, 0, DesignWidth, DesignHeight), "");
-        if (pendingOverwritePath != null) { DrawOverwritePrompt(); return; }
+        if (pendingOverwrite != null) { DrawOverwritePrompt(); return; }
         if (pendingDiscardAction != null) { DrawDiscardPrompt(); return; }
         GUILayout.BeginArea(new Rect(
             12, 10, DesignWidth - 24, DesignHeight - 20));
@@ -331,6 +331,7 @@ internal sealed partial class StructureEditorUI :
         showFootprintOverlay = GUILayout.Toggle(
             showFootprintOverlay, "Green Tiles", GUI.skin.button,
             GUILayout.Width(90));
+        showRoofOverlay = GUILayout.Toggle(showRoofOverlay, "Roof Overlay", GUI.skin.button, GUILayout.Width(105));
         GUILayout.EndHorizontal();
 
         DrawPlacementRulesToggle();
@@ -356,6 +357,7 @@ internal sealed partial class StructureEditorUI :
             GUI.EndGroup();
             HandlePreviewInput(preview, center);
         }
+        DrawRoofLegend(preview);
         GUILayout.Label(
             zoneBrush
                 ? "Zone brush: left-click/drag to rename terrain/floors; right-click to cancel. Middle-drag pans."
@@ -890,6 +892,8 @@ internal sealed partial class StructureEditorUI :
             zoneStroke.BreakPath();
             return;
         }
+        if (current.type == EventType.MouseDown) previewGesture.Set(current.button, true);
+        if (current.type == EventType.MouseDrag && !previewGesture.Owns(current.button)) return;
         if (current.type == EventType.ScrollWheel)
         {
             zoneStroke.BreakPath();
@@ -1039,7 +1043,8 @@ internal sealed partial class StructureEditorUI :
     {
         if (structure == null)
             return;
-        float z = TryFloat(addZ, out float parsedZ) ? parsedZ : 0f;
+        if (!TryFloat(addZ, out float z) || !StructurePlacementPolicy.Supported(z))
+        { status = "Enter a valid Z within ±10,000,000 before placing."; return; }
         if (IsQuickPlaceSupportingTerrain(brushPrefabName))
         {
             SupportingTerrain existingTerrain =
@@ -1049,12 +1054,12 @@ internal sealed partial class StructureEditorUI :
                     item.prefabName.Equals(
                         brushPrefabName,
                         StringComparison.OrdinalIgnoreCase));
-            var terrain = existingTerrain ?? new SupportingTerrain
+            var terrain = existingTerrain?.PlacementDraft() ?? new SupportingTerrain
                 { prefabName = brushPrefabName, x = cell.x, y = cell.y };
             terrain.z = z;
             terrain.hasMapZoneName = !string.IsNullOrWhiteSpace(terrainBrushZone);
             terrain.mapZoneName = terrainBrushZone;
-            PlaceEditorTerrain(terrain, true, existingTerrain != null);
+            PlaceEditorTerrain(terrain, true, existingTerrain);
             return;
         }
 
@@ -1062,7 +1067,9 @@ internal sealed partial class StructureEditorUI :
         float snapY = profile.Snap >= 0 ? profile.Snap / 32f : 0f;
         Vector2 position = ignorePlacementRules && freePosition.HasValue
             ? freePosition.Value : new Vector2(cell.x, cell.y + snapY);
-        PlaceEditorObject(new StructureObject
+        int rotation = GetDefaultTurnableIndex(brushPrefabName);
+        if (!TryEditorFootprint(brushPrefabName, rotation, out var offsets)) return;
+        if (!PlaceEditorObject(new StructureObject
         {
             prefabName = brushPrefabName,
             x = position.x,
@@ -1070,10 +1077,8 @@ internal sealed partial class StructureEditorUI :
             z = z,
             npcInteractionRangeExtender =
                 addNpcInteractionRangeExtender,
-            turnableIndex = GetDefaultTurnableIndex(brushPrefabName),
-            occupiedOffsets = GetPrefabOccupiedOffsets(
-                brushPrefabName, GetDefaultTurnableIndex(brushPrefabName))
-        }, true);
+            turnableIndex = rotation, occupiedOffsets = offsets
+        }, true)) return;
         addX = Format(position.x);
         addY = Format(position.y);
     }
@@ -1310,18 +1315,19 @@ internal sealed partial class StructureEditorUI :
         SupportingTerrain item =
             structure!.supportingTerrain[selectedTerrain];
         GUILayout.Label("Selected supporting terrain");
-        string prefab = LabeledTextField("Prefab", item.prefabName);
+        string prefab = PrefabTextField(item, item.prefabName);
         GUILayout.Label("Coordinates: press Enter to apply");
         string x = CoordinateTextField(item, "X", item.x.ToString(CultureInfo.InvariantCulture), true);
         string y = CoordinateTextField(item, "Y", item.y.ToString(CultureInfo.InvariantCulture), true);
         string z = CoordinateTextField(item, "Z", Format(item.z));
         string zone = LabeledTextField(
             "Zone", item.hasMapZoneName ? item.mapZoneName : "");
-        if (prefab != item.prefabName)
+        if (prefab != item.prefabName && TryEditorPrefab(prefab, out var resolved, true, item.components,
+            item.lockSpriteVariant ? item.spriteVariantIndex : -1, namedZone: item.hasMapZoneName && !string.IsNullOrEmpty(item.mapZoneName)))
         {
-            string previous = item.prefabName;
-            item.prefabName = prefab;
-            if (!PlaceEditorTerrain(item, false, true)) item.prefabName = previous;
+            var draft = item.PlacementDraft();
+            draft.prefabName = resolved;
+            PlaceEditorTerrain(draft, false, item);
         }
         if (int.TryParse(x, out int nextX) && nextX != item.x)
         {
@@ -1416,19 +1422,13 @@ internal sealed partial class StructureEditorUI :
             return;
         }
         GUILayout.Label("Selected object");
-        string prefab = LabeledTextField("Prefab", item.prefabName);
+        string prefab = PrefabTextField(item, item.prefabName);
         string displayedX = Format(item.x), displayedY = Format(item.y);
         GUILayout.Label("Coordinates: press Enter to apply");
         string x = CoordinateTextField(item, "X", displayedX);
         string y = CoordinateTextField(item, "Y", displayedY);
         string z = CoordinateTextField(item, "Z", Format(item.z));
-        if (prefab != item.prefabName)
-        {
-            string previous = item.prefabName;
-            item.prefabName = prefab;
-            if (!CheckPlacement(item, false, item)) item.prefabName = previous;
-            else MarkStructureDirty();
-        }
+        if (prefab != item.prefabName) ChangeObjectPrefab(item, prefab);
         // Display formatting is not an edit. In particular, turning native
         // rules back on must not snap a previously free-placed object.
         if (x != displayedX && TryFloat(x, out float nextX)) ChangeObjectPlacement(item, nextX, item.y);
@@ -1631,7 +1631,7 @@ internal sealed partial class StructureEditorUI :
 
     private void SetFloat(string text, Action<float> set, float oldValue)
     {
-        if (TryFloat(text, out float value) && !Mathf.Approximately(value, oldValue))
+        if (TryFloat(text, out float value) && value != oldValue)
         {
             set(value);
             // This control edits Z only: order changes, XY occupancy does not.
@@ -1639,17 +1639,27 @@ internal sealed partial class StructureEditorUI :
         }
     }
 
-    private void RefreshFiles()
+    private bool RefreshFiles()
     {
-        Directory.CreateDirectory(Plugin.StructuresDirectory);
-        files.Clear();
-        files.AddRange(Directory.GetFiles(Plugin.StructuresDirectory, "*.json")
-            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase));
-        fileLabels.Clear();
-        fileLabels.AddRange(files.Select(Path.GetFileNameWithoutExtension));
-        checkedFiles.RemoveWhere(path => !files.Contains(
-            path, StringComparer.OrdinalIgnoreCase));
-        status = $"{files.Count} structure file(s) found.";
+        try
+        {
+            Directory.CreateDirectory(Plugin.StructuresDirectory);
+            var found = Directory.GetFiles(Plugin.StructuresDirectory, "*.json");
+            Array.Sort(found, StringComparer.OrdinalIgnoreCase);
+            files.Clear();
+            files.AddRange(found);
+            fileLabels.Clear();
+            fileLabels.AddRange(files.Select(Path.GetFileNameWithoutExtension));
+            checkedFiles.RemoveWhere(path => !files.Contains(path, StringComparer.OrdinalIgnoreCase));
+            status = $"{files.Count} structure file(s) found.";
+            return true;
+        }
+        catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+        {
+            status = "Could not refresh the structure file list: " + e.Message;
+            Plugin.Log.LogWarning(status);
+            return false;
+        }
     }
 
     private void BuildPlacementCatalog()
@@ -1665,8 +1675,7 @@ internal sealed partial class StructureEditorUI :
                 {
                     if (IsUnsafeQuickPlaceName(name)) continue;
                     GameObject? prefab = Plugin.ResolvePrefab(name);
-                    if (prefab == null || prefab.GetComponent<EntityMover>() != null ||
-                        prefab.GetComponent<NeuralNPC>() != null || prefab.GetComponent<Enemy>() != null ||
+                    if (prefab == null || WorldPrefabPolicy.CannotReconstruct(prefab) != null ||
                         GetPreviewRenderers(prefab).Count == 0) continue;
                     catalogMetadata[name] = (CatalogDisplayName(name), GetQuickPlaceCategory(name));
                     placementCatalog.Add(name);
@@ -1704,7 +1713,7 @@ internal sealed partial class StructureEditorUI :
         Turnable? turnable =
             Plugin.ResolvePrefab(prefabName)
                 ?.GetComponentInChildren<Turnable>(true);
-        return turnable == null ? -1 : turnable.GetIndex();
+        return turnable?.sprites is { Length: > 0 } ? turnable.GetIndex() : -1;
     }
 
     private static int GetTurnableSpriteCount(string prefabName)
@@ -1714,79 +1723,57 @@ internal sealed partial class StructureEditorUI :
         string prefabName, int turnableIndex)
     {
         var key = (prefabName, turnableIndex);
-        if (!sharedFootprints.TryGetValue(key, out var footprint))
-            sharedFootprints[key] = footprint = BuildPrefabOccupiedOffsets(prefabName, turnableIndex);
+        if (sharedFootprints.TryGetValue(key, out var footprint)) return footprint;
+        footprint = BuildPrefabOccupiedOffsets(prefabName, turnableIndex, out bool cacheable);
+        if (cacheable) sharedFootprints[key] = footprint;
         return footprint;
     }
 
+    private bool TryEditorFootprint(string name, int rotation, out List<StructurePosition> offsets)
+    {
+        try { offsets = GetPrefabOccupiedOffsets(name, rotation); return true; }
+        catch (InvalidDataException e) { offsets = null!; status = e.Message; return false; }
+    }
+
     private static List<StructurePosition> BuildPrefabOccupiedOffsets(
-        string prefabName, int turnableIndex)
+        string prefabName, int turnableIndex, out bool cacheable)
     {
         GameObject? prefab = Plugin.ResolvePrefab(prefabName);
+        cacheable = prefab != null;
         Turnable? turnable =
             prefab?.GetComponentInChildren<Turnable>(true);
-        BoxCollider2D? box =
-            prefab?.GetComponentInChildren<BoxCollider2D>(true);
+        BoxCollider2D? box = prefab?.GetComponentsInChildren<BoxCollider2D>(true)
+            .FirstOrDefault(c => c.enabled && PreviewRendererDiscovery.IsBranchActive(c.transform, prefab.transform));
         if (box != null)
         {
-            Vector2 min = box.offset - box.size * 0.5f;
-            Vector2 max = box.offset + box.size * 0.5f;
-            List<Vector2Int> cells = new();
-            // Tile anchors are integer coordinates. Treat the collider's lower
-            // edge as inclusive and upper edge as exclusive so centered
-            // even-sized colliders cover the expected number of cells.
-            for (int x = Mathf.CeilToInt(min.x - 0.001f);
-                 x < Mathf.CeilToInt(max.x - 0.001f); x++)
-            for (int y = Mathf.CeilToInt(min.y - 0.001f);
-                 y < Mathf.CeilToInt(max.y - 0.001f); y++)
-                cells.Add(new Vector2Int(x, y));
-            if (cells.Count > 0)
-            {
-                int turns = turnable != null &&
-                            turnable.sprites?.Length == 4
-                    ? (turnableIndex - turnable.GetIndex() + 4) % 4
-                    : 0;
-                for (int turn = 0; turn < turns; turn++)
-                    cells = cells.Select(cell =>
-                        new Vector2Int(-cell.y, cell.x)).ToList();
-                if (!cells.Contains(Vector2Int.zero))
-                    cells.Add(Vector2Int.zero);
-                return cells.Distinct().Select(cell =>
-                    new StructurePosition { x = cell.x, y = cell.y }).ToList();
-            }
+            // Imports preserve prefab rotation/scale; the native Turnable only
+            // swaps the sprite and shadows, not this collider's transform.
+            Vector2 center = box.transform.TransformPoint(box.offset) - prefab!.transform.position;
+            Vector2 u = box.transform.TransformVector(new Vector3(box.size.x, 0, 0));
+            Vector2 v = box.transform.TransformVector(new Vector3(0, box.size.y, 0));
+            var cells = PrefabFootprint.Box(prefabName, center.x, center.y, u.x, u.y, v.x, v.y);
+            if (cells.Count > 0) return cells;
         }
         if (turnable == null || turnable.sprites == null ||
             turnable.sprites.Length == 0)
             return new List<StructurePosition>
                 { new() { x = 0, y = 0 } };
 
+        if (turnableIndex < 0) turnableIndex = turnable.GetIndex();
         int index = (turnableIndex % turnable.sprites.Length +
                      turnable.sprites.Length) % turnable.sprites.Length;
-        Bounds bounds = turnable.sprites[index].bounds;
-        int minX = Mathf.FloorToInt(bounds.min.x + 0.001f);
-        int maxX = Mathf.CeilToInt(bounds.max.x - 0.001f) - 1;
-        int minY = Mathf.FloorToInt(bounds.min.y + 0.001f);
-        int maxY = Mathf.CeilToInt(bounds.max.y - 0.001f) - 1;
-        List<StructurePosition> result = new();
-        for (int x = minX; x <= maxX; x++)
-        for (int y = minY; y <= maxY; y++)
-            result.Add(new StructurePosition { x = x, y = y });
-        if (!result.Any(offset => offset.x == 0 && offset.y == 0))
-            result.Add(new StructurePosition { x = 0, y = 0 });
-        return result;
+        Sprite sprite = turnable.sprites[index];
+        if (sprite == null)
+        {
+            cacheable = false;
+            return new List<StructurePosition> { new() };
+        }
+        Bounds bounds = sprite.bounds;
+        return PrefabFootprint.Sprite(prefabName, bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y);
     }
 
     internal static HashSet<Vector2Int> GetObjectCells(StructureObject item)
-    {
-        int anchorX = Mathf.RoundToInt(item.x);
-        int anchorY = Mathf.RoundToInt(item.y);
-        List<StructurePosition> offsets =
-            item.occupiedOffsets != null && item.occupiedOffsets.Count > 0
-                ? item.occupiedOffsets
-                : new List<StructurePosition> { new() };
-        return offsets.Select(offset =>
-            new Vector2Int(anchorX + offset.x, anchorY + offset.y)).ToHashSet();
-    }
+        => StructurePlacementPolicy.Cells(item).Select(c => new Vector2Int(c.X, c.Y)).ToHashSet();
 
     private static bool IsQuickPlaceSupportingTerrain(string prefabName)
     {
@@ -1877,13 +1864,13 @@ internal sealed partial class StructureEditorUI :
         try
         {
             StructureFile loaded =
-                ReadEditableFile(path, out int normalizedTiles);
+                ReadEditableFile(path, out int normalizedRecords, out string revision);
             ClearItemEditor();
-            StopPlanningBrush();
-            StopZoneBrush();
+            ResetDocumentTools();
             structure = loaded;
             InvalidateRenderOrder();
             currentPath = path;
+            currentRevision = revision;
             saveAsName = Path.GetFileNameWithoutExtension(path);
             selectedObject = -1;
             selectedTerrain = -1;
@@ -1893,11 +1880,11 @@ internal sealed partial class StructureEditorUI :
             Vector2 topLeft = GetTopLeftCoordinate();
             offsetX = Format(topLeft.x);
             offsetY = Format(topLeft.y);
-            dirty = normalizedTiles > 0;
+            dirty = normalizedRecords > 0;
             status = $"Loaded {loaded.objects.Count} objects and " +
                      $"{loaded.supportingTerrain.Count} terrain records." +
-                     (normalizedTiles > 0
-                         ? $" Normalized {normalizedTiles} tile object(s) to terrain."
+                     (normalizedRecords > 0
+                         ? $" Normalized {normalizedRecords} tile or footprint record(s). Save to keep the corrections."
                          : "");
             ResetHistory();
         }
@@ -1911,30 +1898,18 @@ internal sealed partial class StructureEditorUI :
     private void CombineCheckedFiles()
     {
         if (!AllowDiscard(CombineCheckedFiles)) return;
-        ClearItemEditor();
 
         try
         {
             List<StructureFile> sources = checkedFiles
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-                .Select(path => ReadEditableFile(path, out _))
+                .Select(path => ReadEditableFile(path, out _, out _))
                 .ToList();
 
-            List<StructureObject> objects = sources
-                .SelectMany(source =>
-                    source.objects ?? new List<StructureObject>())
-                .GroupBy(GetObjectMergeKey, StringComparer.Ordinal)
-                .Select(group => group.First())
-                .ToList();
-            List<SupportingTerrain> terrain = sources
-                .SelectMany(source =>
-                    source.supportingTerrain ??
-                    new List<SupportingTerrain>())
-                .GroupBy(GetTerrainMergeKey, StringComparer.Ordinal)
-                .Select(group => group.First())
-                .ToList();
+            var objects = EditorRecordMerge.Objects(sources);
+            var terrain = EditorRecordMerge.Terrain(sources);
 
-            structure = new StructureFile
+            var combined = new StructureFile
             {
                 formatVersion = 3,
                 name = "Combined Structure",
@@ -1946,10 +1921,13 @@ internal sealed partial class StructureEditorUI :
                 occupiedPositions = new List<StructurePosition>(),
                 serializedObjectsBase64 = ""
             };
-            StopPlanningBrush();
-            StopZoneBrush();
+            // Only discard the current item's draft once all sources have been read and merged.
+            ClearItemEditor();
+            structure = combined;
+            ResetDocumentTools();
             InvalidateRenderOrder();
             currentPath = "";
+            currentRevision = StructureJsonFile.Missing;
             saveAsName = "Combined Structure";
             selectedObject = -1;
             selectedTerrain = -1;
@@ -1964,7 +1942,8 @@ internal sealed partial class StructureEditorUI :
             status =
                 $"Combined {sources.Count} JSON files into " +
                 $"{objects.Count} objects and {terrain.Count} terrain records. " +
-                "Choose Save As to create the shared JSON.";
+                (PlacementConflict() is string conflict ? "Both versions were kept. " + conflict :
+                    "Choose Save As to create the shared JSON.");
         }
         catch (Exception exception)
         {
@@ -1974,10 +1953,10 @@ internal sealed partial class StructureEditorUI :
     }
 
     private static StructureFile ReadEditableFile(
-        string path, out int normalizedTiles)
+        string path, out int normalizedRecords, out string revision)
     {
         object? deserialized = StringSerializationAPI.Deserialize(
-            typeof(StructureFile), File.ReadAllText(path));
+            typeof(StructureFile), StructureJsonFile.Read(path, out revision));
         if (deserialized is not StructureFile file)
             throw new InvalidDataException(
                 $"Could not read {Path.GetFileName(path)} as a structure file.");
@@ -1988,69 +1967,15 @@ internal sealed partial class StructureEditorUI :
         file.supportingTerrain ??= new List<SupportingTerrain>();
         file.occupiedPositions ??= new List<StructurePosition>();
         file.planningTiles = PlanningTiles.Normalize(file.planningTiles);
-        normalizedTiles =
-            StructureFileNormalizer.MoveTileObjectsToTerrain(file);
-        foreach (var item in file.objects)
-            if (string.IsNullOrWhiteSpace(item.prefabName) ||
-                !StructureAlgorithms.IsFinite(item.x) || !StructureAlgorithms.IsFinite(item.y) ||
-                !StructureAlgorithms.IsFinite(item.z))
-                throw new InvalidDataException("An object contains an invalid prefab name or coordinate.");
-        foreach (var item in file.supportingTerrain)
-            if (string.IsNullOrWhiteSpace(item.prefabName) || !StructureAlgorithms.IsFinite(item.z))
-                throw new InvalidDataException("Terrain contains an invalid prefab name or coordinate.");
+        normalizedRecords = StructurePlacementPolicy.ValidateDocumentGeometry(file, repairMissingAnchor: true);
+        normalizedRecords += StructureFileNormalizer.MoveTileObjectsToTerrain(file);
         return file;
     }
 
-    private static string GetObjectMergeKey(StructureObject item)
-    {
-        string componentData = string.Join(
-            ";",
-            (item.components ?? new List<StructureComponent>())
-                .Select(component =>
-                    component.type + ":" +
-                    component.hierarchyPath + ":" +
-                    component.componentIndex + ":" +
-                    component.dataBase64));
-        return string.Join("|",
-            item.prefabName,
-            item.x.ToString("R", CultureInfo.InvariantCulture),
-            item.y.ToString("R", CultureInfo.InvariantCulture),
-            item.z.ToString("R", CultureInfo.InvariantCulture),
-            item.npcInteractionRangeExtender,
-            item.turnableIndex,
-            item.spriteVariantIndex,
-            item.hasEditableSignMessage,
-            item.signMessage,
-            item.hasMapZoneName,
-            item.mapZoneName,
-            componentData);
-    }
-
-    private static string GetTerrainMergeKey(SupportingTerrain item)
-    {
-        string componentData = string.Join(
-            ";",
-            (item.components ?? new List<StructureComponent>())
-                .Select(component =>
-                    component.type + ":" +
-                    component.hierarchyPath + ":" +
-                    component.componentIndex + ":" +
-                    component.dataBase64));
-        return string.Join("|",
-            item.prefabName,
-            item.x,
-            item.y,
-            item.z.ToString("R", CultureInfo.InvariantCulture),
-            item.spriteVariantIndex,
-            item.hasMapZoneName,
-            item.mapZoneName,
-            componentData);
-    }
 
     private void CreateBlankStructure()
     {
         if (!AllowDiscard(CreateBlankStructure)) return;
-        ClearItemEditor();
 
         string baseName = "New Structure";
         string path = Path.Combine(
@@ -2063,7 +1988,7 @@ internal sealed partial class StructureEditorUI :
                 $"{baseName} {suffix++}.json");
         }
 
-        structure = new StructureFile
+        var blank = new StructureFile
         {
             formatVersion = 3,
             name = Path.GetFileNameWithoutExtension(path),
@@ -2074,10 +1999,24 @@ internal sealed partial class StructureEditorUI :
             objects = new List<StructureObject>(),
             serializedObjectsBase64 = ""
         };
-        StopPlanningBrush();
-        StopZoneBrush();
+        string revision;
+        try
+        {
+            revision = StructureJsonFile.Write(path, StringSerializationAPI.Serialize(typeof(StructureFile), blank),
+                allowOverwrite: false, expectedRevision: StructureJsonFile.Missing);
+        }
+        catch (Exception error)
+        {
+            status = "Could not create blank structure: " + error.Message;
+            Plugin.Log.LogError(error);
+            return;
+        }
+        ClearItemEditor();
+        structure = blank;
+        ResetDocumentTools();
         InvalidateRenderOrder();
         currentPath = path;
+        currentRevision = revision;
         saveAsName = structure.name;
         selectedObject = -1;
         selectedTerrain = -1;
@@ -2086,11 +2025,9 @@ internal sealed partial class StructureEditorUI :
         previewOrigin = Vector2.zero;
         offsetX = "0";
         offsetY = "0";
-        MarkStructureDirty();
-        Save(path);
+        dirty = false;
         ResetHistory();
-        RefreshFiles();
-        status =
+        if (RefreshFiles()) status =
             $"Created blank structure {Path.GetFileName(path)}. " +
             "Use Quick Place to begin building.";
     }
@@ -2100,13 +2037,15 @@ internal sealed partial class StructureEditorUI :
         if (structure == null || string.IsNullOrWhiteSpace(addPrefabName) ||
             !TryFloat(addX, out float x) ||
             !TryFloat(addY, out float y) ||
-            !TryFloat(addZ, out float z))
+            !TryFloat(addZ, out float z) || !StructurePlacementPolicy.Supported(x) ||
+            !StructurePlacementPolicy.Supported(y) || !StructurePlacementPolicy.Supported(z))
         {
             status = "Enter a prefab name and valid X, Y, and Z numbers.";
             return;
         }
 
-        if (IsQuickPlaceSupportingTerrain(addPrefabName.Trim()))
+        if (!TryEditorPrefab(addPrefabName, out var resolved)) return;
+        if (IsQuickPlaceSupportingTerrain(resolved))
         {
             if (!StructureAlgorithms.IsGridTranslation(x, y))
             {
@@ -2114,24 +2053,23 @@ internal sealed partial class StructureEditorUI :
                 return;
             }
             string previousBrush = brushPrefabName;
-            brushPrefabName = addPrefabName.Trim();
-            PlaceBrushObject(new Vector2Int(Mathf.RoundToInt(x), Mathf.RoundToInt(y)));
-            brushPrefabName = previousBrush;
+            brushPrefabName = resolved;
+            try { PlaceBrushObject(new Vector2Int(Mathf.RoundToInt(x), Mathf.RoundToInt(y))); }
+            finally { brushPrefabName = previousBrush; }
             return;
         }
 
+        int rotation = GetDefaultTurnableIndex(resolved);
+        if (!TryEditorFootprint(resolved, rotation, out var offsets)) return;
         PlaceEditorObject(new StructureObject
         {
-            prefabName = addPrefabName.Trim(),
+            prefabName = resolved,
             x = x,
             y = y,
             z = z,
             npcInteractionRangeExtender =
                 addNpcInteractionRangeExtender,
-            turnableIndex = GetDefaultTurnableIndex(addPrefabName.Trim()),
-            occupiedOffsets = GetPrefabOccupiedOffsets(
-                addPrefabName.Trim(),
-                GetDefaultTurnableIndex(addPrefabName.Trim()))
+            turnableIndex = rotation, occupiedOffsets = offsets
         }, true);
     }
 
@@ -2149,7 +2087,7 @@ internal sealed partial class StructureEditorUI :
         float x = targetX - reference.x;
         float y = targetY - reference.y;
         if (!StructureAlgorithms.IsFinite(x) || !StructureAlgorithms.IsFinite(y) ||
-            structure.objects.Any(item => Math.Abs(item.x + x) > 10000000 || Math.Abs(item.y + y) > 10000000) ||
+            structure.objects.Any(item => !StructurePlacementPolicy.FitsAt(item, item.x + x, item.y + y)) ||
             structure.supportingTerrain.Any(item => Math.Abs(item.x + x) > 10000000 || Math.Abs(item.y + y) > 10000000) ||
             structure.planningTiles.Any(item => Math.Abs(item.x + x) > 10000000 || Math.Abs(item.y + y) > 10000000))
         {
@@ -2166,6 +2104,9 @@ internal sealed partial class StructureEditorUI :
         }
         // Even an integer translation can change RoundToInt at half-cell
         // anchors (banker's rounding). Validate the proposed document first.
+        foreach (var item in structure.objects)
+            if (StructurePlans.OwnerConflictAt(item, item.x + x, item.y + y) is string ownerConflict)
+            { status = "Cannot move: " + ownerConflict; return; }
         var translated = new StructureFile
         {
             objects = structure.objects.Where(item => GetPlacementSlot(item.prefabName) != PlacementSlot.None)
@@ -2196,34 +2137,33 @@ internal sealed partial class StructureEditorUI :
             $"Moved the structure reference to {Format(targetX)}, {Format(targetY)}.";
     }
 
-    private void SaveAs()
+    private bool SaveAs()
     {
         if (structure == null || string.IsNullOrWhiteSpace(saveAsName) ||
             saveAsName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
         {
             status = "Enter a valid Save As name.";
-            return;
+            return false;
         }
         string path = Path.Combine(Plugin.StructuresDirectory, saveAsName.Trim() + ".json");
-        if (File.Exists(path) && !string.Equals(path, currentPath, StringComparison.OrdinalIgnoreCase))
-        {
-            pendingOverwritePath = path;
-            return;
-        }
-        Save(path);
-        RefreshFiles();
+        bool saved = Save(path);
+        if (saved) RefreshFiles();
+        return saved;
     }
 
-    private void Save(string path)
+    private bool Save(string path, string? confirmedRevision = null)
     {
         if (structure == null || string.IsNullOrWhiteSpace(path))
-            return;
+            return false;
         try
         {
+            StructurePlacementPolicy.ValidateDocumentGeometry(structure);
+            foreach (var item in structure.objects)
+                if (StructurePlans.OwnerConflictAt(item, item.x, item.y) is string ownerConflict)
+                { status = "Cannot save: " + ownerConflict; return false; }
             string? conflict = PlacementConflict();
-            if (conflict != null) { status = "Cannot save: " + conflict; return; }
-            structure.name = Path.GetFileNameWithoutExtension(path);
-            structure.occupiedPositions = structure.objects
+            if (conflict != null) { status = "Cannot save: " + conflict; return false; }
+            var occupied = structure.objects
                 .SelectMany(GetObjectCells)
                 .Concat(structure.supportingTerrain.Select(
                     item => new Vector2Int(item.x, item.y)))
@@ -2232,21 +2172,33 @@ internal sealed partial class StructureEditorUI :
                 .ThenBy(item => item.y)
                 .Select(item => new StructurePosition { x = item.x, y = item.y })
                 .ToList();
-            structure.serializedObjectsBase64 = "";
-            StructureJsonFile.Write(
-                path,
-                StringSerializationAPI.Serialize(typeof(StructureFile), structure));
+            var document = structure.WithSaveHeader(Path.GetFileNameWithoutExtension(path), occupied);
+            string expected = confirmedRevision ?? (string.Equals(path, currentPath, StringComparison.OrdinalIgnoreCase)
+                ? currentRevision : StructureJsonFile.Missing);
+            var revision = StructureJsonFile.Write(path, StringSerializationAPI.Serialize(typeof(StructureFile), document),
+                expectedRevision: expected);
+            // The filename and derived footprint belong to the file we just wrote.
+            // Applying them to the editing model would create a phantom undo step
+            // and discard any redo branch just because the player clicked Save As.
             currentPath = path;
+            currentRevision = revision;
             dirty = false;
             history.Record(structure);
             savedSnapshot = history.Current;
             historyDirty = false;
             status = "Saved " + Path.GetFileName(path) + ".";
+            return true;
+        }
+        catch (StructureFileChangedException changed)
+        {
+            pendingOverwrite = (path, changed.Revision);
+            return false;
         }
         catch (Exception exception)
         {
             status = "Could not save: " + exception.Message;
             Plugin.Log.LogError(exception);
+            return false;
         }
     }
 

@@ -24,7 +24,31 @@ internal static class Program
     private static void Run()
     {
         MarketChecks.Run(Check);
+        KitsunePatchChecks.Run(Check);
+        const string turfPatchId = "structurehandler.tests.turf-cleanup";
+        var cleanup = typeof(StructureItemQuality).Assembly.GetType("StructureHandler.ReleasedTurfCleanupPatch", true);
+        var harmony = HarmonyLib.Harmony.CreateAndPatchAll(cleanup, turfPatchId);
+        try
+        {
+            var target = HarmonyLib.AccessTools.Method(typeof(TurfRegistrar), "OnDestroy");
+            var patches = HarmonyLib.Harmony.GetPatchInfo(target);
+            Check(patches != null && patches.Prefixes.Any(p => p.owner == turfPatchId && p.PatchMethod.DeclaringType == cleanup),
+                "Released-pool guard binds the native private registered field on Silverpine's TurfRegistrar.OnDestroy.");
+        }
+        finally { harmony.UnpatchSelf(); }
+        const string shedPatchId = "structurehandler.tests.shed-baseline";
+        var shed = typeof(StructureItemQuality).Assembly.GetType("StructureHandler.BaseShedCapturePatch", true);
+        harmony = HarmonyLib.Harmony.CreateAndPatchAll(shed, shedPatchId);
+        try
+        {
+            var target = HarmonyLib.AccessTools.Method(typeof(ShedPlotOwnerManager), "Awake");
+            var hooks = HarmonyLib.Harmony.GetPatchInfo(target);
+            Check(hooks != null && hooks.Postfixes.Any(p => p.owner == shedPatchId && p.PatchMethod.DeclaringType == shed),
+                "Shed baseline binds Silverpine's serialized shedPlot during native Awake, not when the player opens the menu.");
+        }
+        finally { harmony.UnpatchSelf(); }
         EditorPerformanceChecks.Run(Check);
+        EditorPlacementChecks.Run(Check);
         typeof(StructureItemQuality).GetMethod("InstallTypeResolver", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, null);
         foreach (Quality quality in Enum.GetValues(typeof(Quality)))
         {

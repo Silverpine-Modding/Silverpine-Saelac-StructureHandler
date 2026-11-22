@@ -50,7 +50,7 @@ internal static class StructureFileNormalizer
                 hasMapZoneName = item.hasMapZoneName,
                 mapZoneName = item.mapZoneName,
                 components = (item.components ?? new List<StructureComponent>())
-                    .Select(component => new StructureComponent
+                    .Select(component => component == null ? throw new InvalidDataException($"Null component on terrain {item.prefabName}.") : new StructureComponent
                     {
                         type = component.type,
                         hierarchyPath = component.hierarchyPath,

@@ -10,17 +10,39 @@ internal sealed partial class StructureEditorUI
     private object? coordinateDraftOwner;
     private readonly Dictionary<string, EditorCoordinateDraft> coordinateDrafts = new();
 
-    // Return the existing coordinate until Enter is pressed. Incomplete values
-    // such as "-" or "107." must not move a record or rebuild the entire preview.
-    private string CoordinateTextField(object owner, string axis, string current, bool wholeNumber = false)
+    private EditorCoordinateDraft FieldDraft(object owner, string key)
     {
         if (!ReferenceEquals(coordinateDraftOwner, owner))
         {
             coordinateDraftOwner = owner;
             coordinateDrafts.Clear();
         }
-        if (!coordinateDrafts.TryGetValue(axis, out var draft))
-            coordinateDrafts[axis] = draft = new EditorCoordinateDraft();
+        if (!coordinateDrafts.TryGetValue(key, out var draft))
+            coordinateDrafts[key] = draft = new EditorCoordinateDraft();
+        return draft;
+    }
+
+    private string PrefabTextField(object owner, string current)
+    {
+        var draft = FieldDraft(owner, "Prefab");
+        draft.Observe(current);
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Prefab (Enter)", GUILayout.Width(85));
+        var edit = EditTextField(draft.Text, "StructureHandler.prefab", submitOnEnter: true);
+        draft.Text = edit.Text;
+        GUILayout.EndHorizontal();
+        if (edit.Action == EditorFieldAction.None) return current;
+        draft.Reset();
+        if (edit.Action != EditorFieldAction.Submit) return current;
+        GUIUtility.keyboardControl = 0;
+        return edit.Text.Trim();
+    }
+
+    // Return the existing coordinate until Enter is pressed. Incomplete values
+    // such as "-" or "107." must not move a record or rebuild the entire preview.
+    private string CoordinateTextField(object owner, string axis, string current, bool wholeNumber = false)
+    {
+        var draft = FieldDraft(owner, axis);
         draft.Observe(current);
         string control = "StructureHandler.coordinate." + axis;
         GUILayout.BeginHorizontal();

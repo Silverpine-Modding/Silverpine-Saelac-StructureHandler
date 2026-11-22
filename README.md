@@ -3,7 +3,51 @@
 Adds Structure Handler controls to Silverpine's shared in-game **Mods** menu
 and a structure editor to the main-menu mod tools.
 
-Version **1.2.29** requires **ModdingTools 1.12.0 or newer**.
+Version **1.2.38** requires **ModdingTools 1.12.0 or newer**.
+
+Press **Enter** after editing a selected record's prefab name; **Escape**
+cancels the edit. The replacement must be installed, belong to the same
+record category (object or terrain), and accept the saved component records.
+You can still open blueprints containing missing mods. The editor also flags
+a single object's footprint crossing a world-tile boundary before saving;
+different objects in one blueprint can still occupy different world tiles.
+
+If an open structure JSON changes or is removed outside the editor, **Save**
+asks before replacing or recreating it. **Keep editing** leaves the disk copy
+alone; use **Save As** with another name to keep both versions. A confirmed
+replacement keeps the previous disk contents in `.json.bak`. Saving does not
+create an undo step. Switching documents turns off placement and deletion brushes.
+
+Quick Place and import check that Silverpine can reload native-serialized objects
+as the same prefab. If a modded object fails this check, its mod needs to register
+the prefab under a unique save ID. Decorative scenery without native serialization
+can still use Structure Handler's per-save companion.
+
+Imports keep fractional furniture positions, but use Silverpine's rounded turf
+cell to decide which world tile owns each item. A bounded export stops and
+identifies any included object that extends outside the rectangle. Expand the
+bounds to include it, or exclude its anchor. Explicit object footprints must
+include `(0,0)`; the editor can add a missing anchor when opening a JSON.
+Save the corrected file before importing. Empty offset lists still mean one cell.
+
+**Combine Checked** only merges fully matching records across files. Different
+sprite locks, footprints, sign text, zones and serialized components are kept;
+resolve competing floor or wall records before saving the combined blueprint.
+
+Released grass and trees are no longer unregistered twice when Silverpine
+closes. This applies to existing saves without reimporting or running a repair.
+
+Edited Kitsune statue inscriptions now travel with each placed statue in the
+native tile/save record. If an older save has already reverted to the default
+text, reimport the structure JSON containing the inscription once, then save
+normally. The plugin does not scan or automatically reapply old blueprints.
+
+In the Structure Editor, turn on **Roof Overlay** beside **Green Tiles**.
+Violet means a prefab supplies the game's `Roofed` tag at that cell; gold means
+the blueprint supplies outdoor ground; gray means unknown (for example, a well
+that keeps its destination ground). Empty cells stay uncolored. Hover a cell
+to read its coordinates and status. This is a preview only: zone names and
+enclosing walls do not create roofs, and the overlay does not change the JSON.
 
 ## Ground underneath imported objects (1.2.29)
 

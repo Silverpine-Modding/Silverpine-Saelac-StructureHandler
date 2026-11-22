@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.IO;
 using System.Reflection;
 using StructureHandler;
 
@@ -75,5 +76,34 @@ internal static class EditorPerformanceChecks
         var restored = historyType.GetMethod("Undo", member).Invoke(history, null);
         check((bool)copier.GetMethod("Equal", flags).Invoke(null, new[] { original, restored }),
             "Mono undo restores the original document after an edit.");
+
+        // Exercise the compiled editor save path with an empty blueprint; no
+        // loaded scene, user structures, IMGUI or game-save files are needed.
+        string path = Path.Combine(Path.GetTempPath(), "StructureHandler-editor-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var ui = System.Runtime.Serialization.FormatterServices.GetUninitializedObject(uiType);
+            object doc = Activator.CreateInstance(type, true);
+            historyType.GetMethod("Reset", member).Invoke(history, new[] { doc });
+            var later = copier.GetMethod("Clone", flags).Invoke(null, new[] { doc });
+            type.GetField("exportedUtc").SetValue(later, "later edit");
+            historyType.GetMethod("Record", member).Invoke(history, new[] { later });
+            historyType.GetMethod("Undo", member).Invoke(history, null);
+            uiType.GetField("structure", member).SetValue(ui, doc);
+            uiType.GetField("history", member).SetValue(ui, history);
+            bool Save(string confirmed = null) => (bool)uiType.GetMethod("Save", member).Invoke(ui, new object[] { path, confirmed });
+            check(Save() && (bool)historyType.GetProperty("CanRedo", member).GetValue(history) &&
+                !(bool)historyType.GetProperty("CanUndo", member).GetValue(history),
+                "Compiled Save As writes a new blueprint without adding undo or removing redo under Unity Mono.");
+            File.WriteAllText(path, "external edit");
+            check(!Save() && uiType.GetField("pendingOverwrite", member).GetValue(ui) != null &&
+                File.ReadAllText(path) == "external edit" && !File.Exists(path + ".bak"),
+                "Compiled Save prompts on external edits and leaves the destination and backup untouched.");
+            var io = assembly.GetType("StructureHandler.StructureJsonFile", true);
+            object[] observed = { path, null }; io.GetMethod("Read", flags).Invoke(null, observed);
+            check(Save((string)observed[1]) && File.ReadAllText(path + ".bak") == "external edit" && Save(),
+                "Confirmed overwrite backs up the external edit and advances the revision for the next save under Unity Mono.");
+        }
+        finally { File.Delete(path); File.Delete(path + ".bak"); }
     }
 }

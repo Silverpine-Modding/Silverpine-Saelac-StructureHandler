@@ -34,7 +34,7 @@ internal sealed partial class StructureEditorUI
                 info.Passable = colliders[0].passable;
             }
         }
-        editorPrefabMetadata[name] = info;
+        if (prefab != null) editorPrefabMetadata[name] = info;
         return info;
     }
 }

@@ -45,19 +45,23 @@ internal sealed partial class StructureEditorUI
     private sealed class PlacementProfile
     {
         internal PlacementSlot Slot;
-        internal bool Construction, Pickup, AllowWall, Water;
+        internal bool Construction, Pickup, AllowWall;
         internal int Snap = -1;
-        internal readonly List<(Vector2Int Offset, bool Root, bool Passable)> Colliders = new();
+        internal readonly List<Vector2> WaterOffsets = new();
+        internal readonly List<(Vector2 Offset, string Path, int Index, bool Passable, bool Wall)> Colliders = new();
     }
     private static readonly Dictionary<string, PlacementProfile> placementProfiles = new(StringComparer.OrdinalIgnoreCase);
 
     private static PlacementProfile Profile(string name)
     {
         if (placementProfiles.TryGetValue(name, out var result)) return result;
+        string requested = name;
         result = new PlacementProfile { Slot = StructurePlacementPolicy.Slot(name) };
         GameObject? prefab = Plugin.ResolvePrefab(name);
         if (prefab != null)
         {
+            name = Plugin.PrefabNameOf(prefab);
+            result.Slot = StructurePlacementPolicy.Slot(name);
             // Native ground registers a turf. A tile-prefixed sprite/utility
             // with no registrar is not evidence that it supplies a floor.
             if (result.Slot == PlacementSlot.Ground && prefab.GetComponent<TurfRegistrar>() == null)
@@ -78,21 +82,76 @@ internal sealed partial class StructureEditorUI
                 name.Equals("prefab_furniture_bathtub", StringComparison.OrdinalIgnoreCase) ||
                 name.Equals("prefab_furniture_sign", StringComparison.OrdinalIgnoreCase);
             if (name.Equals("prefab_furniture_fireplace", StringComparison.OrdinalIgnoreCase)) result.Snap = 5;
-            result.Water = prefab.GetComponentsInChildren<TileTags>(false)
-                .Any(tags => tags.tags != null && tags.tags.Contains(TileTag.Submerge));
-            foreach (var collider in prefab.GetComponentsInChildren<TurfCollider>(false))
-                result.Colliders.Add((Vector2Int.RoundToInt(collider.transform.position - prefab.transform.position),
-                    collider.transform == prefab.transform, collider.passable));
+            foreach (var tags in prefab.GetComponentsInChildren<TileTags>(true))
+                if (PreviewRendererDiscovery.IsBranchActive(tags.transform, prefab.transform) &&
+                    tags.tags != null && tags.tags.Contains(TileTag.Submerge))
+                    result.WaterOffsets.Add(tags.transform.position - prefab.transform.position);
+            foreach (var collider in prefab.GetComponentsInChildren<TurfCollider>(true))
+                if (PreviewRendererDiscovery.IsBranchActive(collider.transform, prefab.transform))
+                    result.Colliders.Add((collider.transform.position - prefab.transform.position,
+                        StructureTransfer.GetHierarchyPath(prefab.transform, collider.transform),
+                        collider.GetType() != typeof(TurfCollider) ? -1 : Array.IndexOf(
+                            collider.GetComponents<TurfCollider>().Where(c => c.GetType() == typeof(TurfCollider)).ToArray(), collider),
+                        collider.passable,
+                        collider.name.Contains("wall", StringComparison.OrdinalIgnoreCase)));
         }
-        if (prefab != null) placementProfiles[name] = result;
+        if (prefab != null) placementProfiles[requested] = result;
         return result;
     }
 
     internal static PlacementSlot GetPlacementSlot(string name) => Profile(name).Slot;
 
+    // The manual entry fields bypass the Quick Place catalog. Check only the
+    // newly entered ID; still allow opening, moving or removing a missing mod's records.
+    private bool TryEditorPrefab(string input, out string name, bool? terrain = null,
+        List<StructureComponent>? components = null, int lockedVariant = -1, bool sign = false, bool namedZone = false)
+    {
+        name = input.Trim();
+        try
+        {
+            var prefab = Plugin.ResolvePrefab(name);
+            if (prefab == null) { status = $"Prefab '{name}' is not available."; return false; }
+            name = Plugin.RegisteredNameResolver()(name);
+            if (WorldPrefabPolicy.CannotReconstruct(prefab) is string reason)
+            { status = $"Cannot place '{name}': it {reason}."; return false; }
+            if (name.Equals("prefab_item", StringComparison.OrdinalIgnoreCase))
+            { status = "Use the Items tab to create a populated item."; return false; }
+            if (terrain.HasValue && terrain.Value != IsQuickPlaceSupportingTerrain(name))
+            { status = "Use Quick Place to switch between a terrain record and an object."; return false; }
+            if ((sign && !PrefabHasSign(name)) || (namedZone && !PrefabHasMapZone(name)) ||
+                (lockedVariant >= 0 && lockedVariant >= GetSpriteVariants(name).Length))
+            { status = "This prefab cannot keep the saved sign, zone or sprite override. Place a new record instead."; return false; }
+            StructureTransfer.ValidateComponentData(components, name, prefab);
+            return true;
+        }
+        catch (Exception e)
+        { status = "Cannot use this prefab: " + e.Message; return false; }
+    }
+
+    private void ChangeObjectPrefab(StructureObject item, string name)
+    {
+        if (!TryEditorPrefab(name, out var resolved, false, item.components,
+            item.lockSpriteVariant ? item.spriteVariantIndex : -1, item.hasEditableSignMessage,
+            item.hasMapZoneName && !string.IsNullOrEmpty(item.mapZoneName))) return;
+        var draft = item.PlacementDraft();
+        draft.prefabName = resolved;
+        int rotations = GetTurnableSpriteCount(resolved);
+        draft.turnableIndex = item.turnableIndex >= 0 && item.turnableIndex < rotations
+            ? item.turnableIndex : GetDefaultTurnableIndex(resolved);
+        if (!TryEditorFootprint(resolved, draft.turnableIndex, out draft.occupiedOffsets)) return;
+        if (!CheckPlacement(draft, false, item)) return;
+        item.prefabName = resolved; item.turnableIndex = draft.turnableIndex;
+        item.occupiedOffsets = draft.occupiedOffsets;
+        MarkStructureDirty(changedRecord: item);
+    }
+
     private bool CheckPlacement(StructureObject candidate, bool replaceSlot, object? ignore = null)
     {
         if (structure == null) return false;
+        if (!StructurePlacementPolicy.FitsAt(candidate, candidate.x, candidate.y))
+        { status = "Placement would exceed the supported coordinate range (±10,000,000)."; return false; }
+        if (StructurePlans.OwnerConflictAt(candidate, candidate.x, candidate.y) is string conflict)
+        { status = conflict; return false; }
         if (StructureItemData.IsItem(candidate) &&
             !candidate.components.Any(component => StructureItemData.IsComponent(component, "WorldInventory")))
         {
@@ -117,25 +176,19 @@ internal sealed partial class StructureEditorUI
                 status = $"{profile.Slot} slot is occupied by {name}. Paint to replace it, or choose another cell.";
                 return false;
             }
-            var existingAnchor = Vector2Int.RoundToInt(new Vector2(x, y));
-            if (existingAnchor == anchor && existing.Water) water = true;
+            var origin = new Vector2(x, y);
+            foreach (var offset in existing.WaterOffsets)
+                if (RegisteredCell(origin, offset) == anchor) { water = true; break; }
             foreach (var collider in existing.Colliders)
             {
-                if (existingAnchor + collider.Offset != anchor) continue;
-                bool blocks = !collider.Passable;
-                if (collider.Root && FurnitureCollision.TryReadEnabled(components, collider.Passable, out bool savedBlocks))
-                    blocks = savedBlocks;
-                if (!blocks) continue;
+                if (RegisteredCell(origin, collider.Offset) != anchor) continue;
+                if (!FurnitureCollision.BlocksAt(components, collider.Path, collider.Index, collider.Passable)) continue;
                 blocked = true;
-                wallBlocked |= name.Contains("wall", StringComparison.OrdinalIgnoreCase);
+                wallBlocked |= collider.Wall;
             }
             return true;
         }
-        bool rebuiltMovingRecord = placementIndexDirty && ignore != null;
         CollectPlacementCandidates(cells.Append(anchor));
-        // Callers temporarily move the candidate before validating. If a cold
-        // index saw that tentative position, don't retain it after a rejection.
-        if (rebuiltMovingRecord) placementIndexDirty = true;
         foreach (var record in placementCandidates)
         {
             if (ReferenceEquals(record, ignore)) continue;
@@ -201,38 +254,48 @@ internal sealed partial class StructureEditorUI
     private void ChangeObjectPlacement(StructureObject item, float x, float y, int? rotation = null)
     {
         if (item.x == x && item.y == y && (!rotation.HasValue || rotation.Value == item.turnableIndex)) return;
-        float oldX = item.x, oldY = item.y;
-        int oldRotation = item.turnableIndex;
-        var oldOffsets = item.occupiedOffsets;
-        item.x = x; item.y = y;
-        SnapEditorPosition(item);
+        var draft = item.PlacementDraft();
+        draft.x = x; draft.y = y;
+        SnapEditorPosition(draft);
         if (rotation.HasValue)
         {
-            item.turnableIndex = rotation.Value;
-            item.occupiedOffsets = GetPrefabOccupiedOffsets(item.prefabName, rotation.Value);
+            draft.turnableIndex = rotation.Value;
+            if (!TryEditorFootprint(item.prefabName, rotation.Value, out draft.occupiedOffsets)) return;
         }
-        if (!CheckPlacement(item, false, item))
-        { item.x = oldX; item.y = oldY; item.turnableIndex = oldRotation; item.occupiedOffsets = oldOffsets; return; }
-        bool snapped = item.x != x || item.y != y;
-        if (item.x == oldX && item.y == oldY && item.turnableIndex == oldRotation)
+        if (!CheckPlacement(draft, false, item)) return;
+        bool snapped = draft.x != x || draft.y != y;
+        if (draft.x == item.x && draft.y == item.y && draft.turnableIndex == item.turnableIndex)
         {
             status = $"Native snapping kept the position at {Format(item.x)}, {Format(item.y)}. Enable Ignore Placement Rules for fractional movement.";
             return;
         }
+        item.x = draft.x; item.y = draft.y;
+        item.turnableIndex = draft.turnableIndex;
+        item.occupiedOffsets = draft.occupiedOffsets;
         MarkStructureDirty(changedRecord: item);
         status = $"Position: {Format(item.x)}, {Format(item.y)}." +
             (snapped ? " Adjusted to native snapping; enable Ignore Placement Rules for fractional movement." : "");
     }
 
-    private bool PlaceEditorTerrain(SupportingTerrain item, bool replaceSlot, bool moving = false)
+    private bool PlaceEditorTerrain(SupportingTerrain draft, bool replaceSlot, SupportingTerrain? existing = null)
     {
-        var candidate = new StructureObject { prefabName = item.prefabName, x = item.x, y = item.y, z = item.z };
-        if (!CheckPlacement(candidate, replaceSlot, moving ? item : null)) return false;
-        int removed = replaceSlot ? RemoveSlotOccupants(item.prefabName, GetObjectCells(candidate), item) : 0;
-        if (!moving) structure!.supportingTerrain.Add(item);
-        selectedTerrain = structure!.supportingTerrain.IndexOf(item);
+        var candidate = new StructureObject { prefabName = draft.prefabName, x = draft.x, y = draft.y, z = draft.z };
+        if (!CheckPlacement(candidate, replaceSlot, existing)) return false;
+        int removed = replaceSlot ? RemoveSlotOccupants(draft.prefabName, GetObjectCells(candidate), existing) : 0;
+        var item = existing ?? draft;
+        bool changed = existing == null || removed != 0 || item.prefabName != draft.prefabName ||
+            item.x != draft.x || item.y != draft.y || item.z != draft.z ||
+            item.hasMapZoneName != draft.hasMapZoneName || item.mapZoneName != draft.mapZoneName;
+        if (existing == null) structure!.supportingTerrain.Add(item);
+        else if (changed)
+        {
+            item.prefabName = draft.prefabName;
+            item.x = draft.x; item.y = draft.y; item.z = draft.z;
+            item.hasMapZoneName = draft.hasMapZoneName; item.mapZoneName = draft.mapZoneName;
+        }
+        selectedTerrain = existing == null ? structure!.supportingTerrain.Count - 1 : structure!.supportingTerrain.IndexOf(item);
         selectedObject = -1;
-        MarkStructureDirty(changedRecord: item);
+        if (changed) MarkStructureDirty(changedRecord: item);
         status = $"Placed {CatalogDisplayName(item.prefabName)} at {item.x}, {item.y}." +
             (removed > 0 ? $" Replaced {removed} record(s) in that slot; Undo restores them." : "");
         return true;
@@ -241,9 +304,9 @@ internal sealed partial class StructureEditorUI
     private void ChangeTerrainPlacement(SupportingTerrain item, int x, int y)
     {
         if (item.x == x && item.y == y) return;
-        int oldX = item.x, oldY = item.y;
-        item.x = x; item.y = y;
-        if (!PlaceEditorTerrain(item, false, true)) { item.x = oldX; item.y = oldY; }
+        var draft = item.PlacementDraft();
+        draft.x = x; draft.y = y;
+        PlaceEditorTerrain(draft, false, item);
     }
 
     private int conflictRevision = -1;

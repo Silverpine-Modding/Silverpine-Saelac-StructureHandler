@@ -15,7 +15,7 @@ internal sealed partial class StructureEditorUI
     private bool brushStroke;
     private bool discardApproved;
     private Action? pendingDiscardAction;
-    private string? pendingOverwritePath;
+    private (string Path, string Revision)? pendingOverwrite;
     private Vector2 detailsScroll;
     internal int editRevision;
     private bool geometryDirty = true;
@@ -30,12 +30,38 @@ internal sealed partial class StructureEditorUI
     private static readonly Dictionary<string, Sprite[]> sharedVariants = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<(string, int), List<StructurePosition>> sharedFootprints = new();
 
+    private void EndLeftPreviewStroke()
+    {
+        brushStroke = false;
+        lastBrushCell = null;
+        lastPlanningCell = null;
+        zoneStroke.End();
+    }
+    private void OnApplicationFocus(bool focused)
+    {
+        if (focused) return;
+        previewGesture.Reset();
+        EndLeftPreviewStroke();
+    }
+    private void ResetDocumentTools()
+    {
+        previewGesture.Reset();
+        EndLeftPreviewStroke();
+        deleteBrush = false;
+        brushPrefabName = "";
+        StopPlanningBrush();
+        StopZoneBrush();
+        lastSelectionCell = null;
+        coordinateDraftOwner = null;
+        coordinateDrafts.Clear();
+    }
     internal static void ClearSharedMetadata()
     {
         sharedVariants.Clear();
         sharedFootprints.Clear();
         placementProfiles.Clear();
         editorPrefabMetadata.Clear();
+        if (instance != null) instance.ClearRoofPreview();
     }
     private void ResetHistory()
     {
@@ -53,12 +79,15 @@ internal sealed partial class StructureEditorUI
     }
     private void Undo()
     {
-        brushStroke = false;
+        previewGesture.Reset();
+        EndLeftPreviewStroke();
         FlushHistory();
         RestoreEditorSnapshot(history.Undo());
     }
     private void Redo()
     {
+        previewGesture.Reset();
+        EndLeftPreviewStroke();
         FlushHistory();
         RestoreEditorSnapshot(history.Redo());
     }
@@ -91,13 +120,14 @@ internal sealed partial class StructureEditorUI
         GUI.Box(new Rect(570, 360, 780, 180), "");
         GUILayout.BeginArea(new Rect(595, 380, 730, 140));
         GUILayout.Label("This structure has unsaved changes.");
-        GUILayout.Label("Save them, discard them, or return to editing.");
+        GUILayout.Label(status.StartsWith("Could not save:", StringComparison.Ordinal) ||
+            status.StartsWith("Cannot save:", StringComparison.Ordinal) || status == "Enter a valid Save As name."
+            ? status : "Save them, discard them, or return to editing.");
         GUILayout.Space(18);
         GUILayout.BeginHorizontal();
         if (GUILayout.Button("Save and continue"))
         {
-            if (string.IsNullOrWhiteSpace(currentPath)) SaveAs(); else Save(currentPath);
-            if (!dirty) RunPendingDiscard();
+            if (string.IsNullOrWhiteSpace(currentPath) ? SaveAs() : Save(currentPath)) RunPendingDiscard();
         }
         if (GUILayout.Button("Discard changes")) RunPendingDiscard();
         if (GUILayout.Button("Keep editing")) pendingDiscardAction = null;
@@ -117,19 +147,29 @@ internal sealed partial class StructureEditorUI
         GUI.enabled = true;
         GUI.Box(new Rect(570, 360, 780, 180), "");
         GUILayout.BeginArea(new Rect(595, 380, 730, 140));
-        GUILayout.Label("Replace " + System.IO.Path.GetFileName(pendingOverwritePath) + "?");
-        GUILayout.Label("The previous file will be kept as a .json.bak backup.");
+        var target = pendingOverwrite!.Value;
+        bool missing = target.Revision == StructureJsonFile.Missing;
+        bool wasOpen = string.Equals(target.Path, currentPath, StringComparison.OrdinalIgnoreCase);
+        GUILayout.Label(System.IO.Path.GetFileName(target.Path) + (missing ? " was removed from disk." :
+            wasOpen ? " changed on disk since opening or saving." : " already exists."));
+        GUILayout.Label(missing ? "Recreate this file from the open document?" :
+            "Replace the disk copy? Its previous contents will be kept in the .json.bak backup.");
         GUILayout.Space(18);
         GUILayout.BeginHorizontal();
-        if (GUILayout.Button("Overwrite"))
+        if (GUILayout.Button(missing ? "Recreate file" : "Overwrite"))
         {
-            string path = pendingOverwritePath!;
-            pendingOverwritePath = null;
-            Save(path);
-            RefreshFiles();
-            if (!dirty && pendingDiscardAction != null) RunPendingDiscard();
+            pendingOverwrite = null;
+            if (Save(target.Path, target.Revision))
+            {
+                RefreshFiles();
+                if (pendingDiscardAction != null) RunPendingDiscard();
+            }
         }
-        if (GUILayout.Button("Cancel")) pendingOverwritePath = null;
+        if (GUILayout.Button("Keep editing"))
+        {
+            pendingOverwrite = null;
+            pendingDiscardAction = null;
+        }
         GUILayout.EndHorizontal();
         GUILayout.EndArea();
     }
@@ -159,6 +199,7 @@ internal sealed partial class StructureEditorUI
     {
         if (!geometryDirty) return;
         geometryDirty = false;
+        roofMapDirty = true;
         planningViewportValid = false;
         cellIndex.Clear();
         cachedCells.Clear();
