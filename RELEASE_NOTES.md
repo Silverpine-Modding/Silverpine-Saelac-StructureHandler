@@ -1,14 +1,14 @@
-# Structure Handler 1.2.38
+# Structure Handler 1.2.39
 
 Created by **Saelac and ChatGPT**.
 
-This update fixes incorrect placement previews and edits that could alter a record after rejection.
+This update keeps imported grass zones from following pooled grass to unrelated coordinates.
 
 ## Requirements and installation
 
 - Silverpine 1.7.3 and BepInEx 5.
 - **[ModdingTools 1.12.0 or newer](https://github.com/Silverpine-Modding/Silverpine-Saelac-Modding-Tools/releases)** must be installed separately. This requirement is enforced by the plugin.
-- Close the game. Extract `StructureHandler-1.2.38.zip` into
+- Close the game. Extract `StructureHandler-1.2.39.zip` into
   `BepInEx/plugins/StructureHandler/`, replacing the previous DLL, or replace
   that DLL with the standalone download. Do not keep a second copy elsewhere
   under `BepInEx/plugins`.
@@ -16,7 +16,21 @@ This update fixes incorrect placement previews and edits that could alter a reco
   `.sav.moddingtools` companion alongside its `.sav` file when copying or
   restoring saves. This download does not contain or update ModdingTools.
 
-## New in 1.2.38
+## New in 1.2.39
+
+- Grass and swamp grass reset their zone before reuse. A native saved name is
+  applied afterward, at its actual coordinate. Repeated pool callbacks cannot
+  unregister another zone that replaced the grass.
+- Old saves with recorded import coordinates are checked automatically. The
+  repair indexes old grass records, then rechecks the exact cell, prefab and
+  name before clearing a match as that world tile loads. Unrelated names,
+  import cells, known persistence areas and ambiguous layers are left alone.
+  Save normally; nothing is automatically saved over the original slot.
+- The historical repair is enabled only for 1.2.39–1.2.40. The pool fix is
+  permanent. At 1.2.41 the migration implementation can be removed; retain
+  the pass-through v5 save upgrade for older companions.
+
+## Changes in 1.2.38
 
 - Rejected terrain repaints, moves, rotations and prefab changes leave the original record
   intact. Invalid brush Z values no longer silently place at zero. Repainting unchanged

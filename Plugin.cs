@@ -27,7 +27,7 @@ public sealed class Plugin : BaseUnityPlugin
 {
     public const string PluginGuid = "renegadex.silverpine.customstructures";
     public const string PluginName = "Structure Handler";
-    public const string PluginVersion = "1.2.38";
+    public const string PluginVersion = "1.2.39";
     public const int EditorApiVersion = 2;
 
     internal static ManualLogSource Log = null!;
@@ -207,6 +207,9 @@ public sealed class Plugin : BaseUnityPlugin
         Harmony.CreateAndPatchAll(typeof(StructureMidnightPatch), PluginGuid + ".midnight");
         Harmony.CreateAndPatchAll(typeof(StructureSpriteRefreshPatch), PluginGuid + ".sprite-refresh");
         Harmony.CreateAndPatchAll(typeof(StructurePoolReleasePatch), PluginGuid + ".pool-release");
+        Harmony.CreateAndPatchAll(typeof(GrassZoneClaimPatch), PluginGuid + ".grass-zone-claim");
+        Harmony.CreateAndPatchAll(typeof(GrassZoneStartPatch), PluginGuid + ".grass-zone-start");
+        Harmony.CreateAndPatchAll(typeof(GrassZoneUnregisterPatch), PluginGuid + ".grass-zone-release");
         Harmony.CreateAndPatchAll(typeof(ReleasedTurfCleanupPatch), PluginGuid + ".released-turf-cleanup");
         Harmony.CreateAndPatchAll(typeof(PlayerBuildableSleepPatch), PluginGuid + ".worldtile-sleep");
         Harmony.CreateAndPatchAll(typeof(PlayerBuildablePickupPatch), PluginGuid + ".worldtile-pickup");

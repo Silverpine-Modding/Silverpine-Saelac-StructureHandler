@@ -6,6 +6,18 @@ void Check(bool value) { if (!value) throw new Exception("Native serialization a
 WaterSettingsChecks.Run(Check);
 ItemStorageChecks.Run(Check);
 MarketChecks.Run(Check);
+var preGrass = (StructureWorldState)StringSerializationAPI.Deserialize(typeof(StructureWorldState), "{\"importedCells\":[{\"x\":10,\"y\":12}]}");
+Check(preGrass.legacyGrassRepair == null && preGrass.importedCells[0].y == 12);
+preGrass.legacyGrassRepair = new LegacyGrassRepairState();
+StructureWorldState GrassRoundtrip() => (StructureWorldState)StringSerializationAPI.Deserialize(typeof(StructureWorldState),
+    StringSerializationAPI.Serialize(typeof(StructureWorldState), preGrass));
+Check(GrassRoundtrip().legacyGrassRepair?.pending == null && GrassRoundtrip().legacyGrassRepair != null);
+preGrass.legacyGrassRepair.pending = new() { new LegacyGrassCell { x = -105, y = 36, prefab = "prefab_tile_grass", name = "Garden" } };
+preGrass.legacyGrassRepair.backedUp = true;
+var pendingGrass = GrassRoundtrip().legacyGrassRepair!;
+var pendingCell = pendingGrass.pending!.Single();
+Check(pendingGrass.backedUp && pendingCell.x == -105 && pendingCell.name == "Garden");
+Console.WriteLine("PASS Native serializer distinguishes missing, awaiting index, and exact pending grass-zone repair coordinates.");
 var editorFile = EditorPerformanceChecks.FilledFile();
 var editorCopy = EditorDocumentCopy.Clone(editorFile);
 Check(StringSerializationAPI.Serialize(typeof(StructureFile), editorFile) == StringSerializationAPI.Serialize(typeof(StructureFile), editorCopy));

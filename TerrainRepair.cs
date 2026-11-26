@@ -37,6 +37,13 @@ internal static class TerrainRepair
     {
         if (!busy) savePath = Path.GetFullPath(path);
     }
+    internal static string BackupLegacyZones()
+    {
+        if (busy || ModSaveData.Warnings.Count != 0 || string.IsNullOrWhiteSpace(savePath) ||
+            !File.Exists(savePath + ".moddingtools")) throw new IOException("No verified save and companion to back up.");
+        return TerrainRepairBackup.CopyOriginal(savePath,
+            Path.Combine(Application.persistentDataPath, "Saves", "StructureHandler Repair Backups"));
+    }
     internal static void CheckAfterLoad()
     {
         if (busy || notified || SerializationManager.loadingSave ||

@@ -19,6 +19,9 @@
     <Compile Include="..\PreparedWorldState.cs" Link="PreparedWorldState.cs" />
     <Compile Include="..\TemporarySpriteOverride.cs" Link="TemporarySpriteOverride.cs" />
     <Compile Include="..\LegacyStructureReader.cs" Link="LegacyStructureReader.cs" />
+    <Compile Include="..\LegacyGrassIndex.cs" Link="LegacyGrassIndex.cs" />
+    <Compile Include="..\GrassZoneLifecycle.cs" Link="GrassZoneLifecycle.cs" />
+    <Compile Include="..\PooledGrass.cs" Link="PooledGrass.cs" />
     <Compile Include="..\ImportTransaction.cs" Link="ImportTransaction.cs" />
     <Compile Include="..\SnapshotHistory.cs" Link="SnapshotHistory.cs" />
     <Compile Include="..\EditorDocumentHistory.cs" Link="EditorDocumentHistory.cs" />

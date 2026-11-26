@@ -29,6 +29,23 @@ internal sealed class StructureWorldState
     public List<StructureObject> clearedScenery = new();
     public List<StructurePosition> importedCells = new();
     public SharedMarketState? sharedMarket;
+    public LegacyGrassRepairState? legacyGrassRepair;
+}
+
+// Temporary v5 -> v6 migration. Null state = new, finished, or retired.
+[Serializable]
+internal sealed class LegacyGrassRepairState
+{
+    // null = needs indexing; otherwise only outstanding historical cells.
+    public List<LegacyGrassCell>? pending;
+    public bool backedUp;
+}
+
+[Serializable]
+internal sealed class LegacyGrassCell
+{
+    public int x, y;
+    public string prefab = "", name = "";
 }
 
 [Serializable]

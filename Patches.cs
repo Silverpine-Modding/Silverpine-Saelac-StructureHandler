@@ -19,6 +19,25 @@ using UnityEngine.UI;
 
 namespace StructureHandler;
 
+[HarmonyPatch(typeof(ObjectPool), nameof(ObjectPool.Claim))]
+internal static class GrassZoneClaimPatch
+{
+    private static void Prefix(GameObject __0, Dictionary<GameObject,Stack<GameObject>> ___freePools) =>
+        GrassZoneLifecycle.BeforeClaim(__0, ___freePools);
+}
+[HarmonyPatch(typeof(MapZone), "Start")]
+internal static class GrassZoneStartPatch
+{
+    private static bool Prefix(MapZone __instance, Dictionary<Vector2Int,MapZone> ___registered) =>
+        GrassZoneLifecycle.ShouldStart(__instance, ___registered);
+}
+[HarmonyPatch(typeof(MapZone), "OnDestroy")]
+internal static class GrassZoneUnregisterPatch
+{
+    private static bool Prefix(MapZone __instance, Dictionary<Vector2Int,MapZone> ___registered) =>
+        GrassZoneLifecycle.ShouldUnregister(__instance, ___registered);
+}
+
 [HarmonyPatch(typeof(WorldItem), "UpdateSprite")]
 internal static class WorldItemUpdateSpriteGuard
 {

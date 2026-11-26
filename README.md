@@ -3,7 +3,15 @@
 Adds Structure Handler controls to Silverpine's shared in-game **Mods** menu
 and a structure editor to the main-menu mod tools.
 
-Version **1.2.38** requires **ModdingTools 1.12.0 or newer**.
+Version **1.2.39** requires **ModdingTools 1.12.0 or newer**.
+
+Imported grass keeps its zone at its saved coordinate when Silverpine reuses
+grass elsewhere. For pre-fix saves with an import footprint, 1.2.39 and
+1.2.40 automatically check for leaked names. As affected world tiles load,
+the repair clears corroborated names on plain grass outside imports; it skips
+authored persistence areas and ambiguous layers. There is no zone-repair
+button. Save normally to keep changes. The original save and companion are
+copied to `Saves/StructureHandler Repair Backups` before the first change.
 
 Press **Enter** after editing a selected record's prefab name; **Escape**
 cancels the edit. The replacement must be installed, belong to the same

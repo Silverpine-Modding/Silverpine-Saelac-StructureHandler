@@ -13,6 +13,7 @@ internal sealed class ImportFootprint
     private HashSet<(int X, int Y)> cells = new();
 
     internal bool Contains(int x, int y) => cells.Contains((x, y));
+    internal bool HasHistory => cells.Count != 0;
     internal void Record(IEnumerable<(int X, int Y)> imported) => cells.UnionWith(imported);
     internal void Reset() => cells.Clear();
     internal List<StructurePosition> Capture() => cells.OrderBy(p => p.X).ThenBy(p => p.Y)

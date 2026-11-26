@@ -14,6 +14,7 @@ PreviewSelectionChecks.Run(Test, Check);
 RoofPreviewChecks.Run(Test, Check);
 KitsuneInscriptionChecks.Run(Test, Check);
 TurfLifecycleChecks.Run(Test, Check);
+GrassZoneChecks.Run(Test, Check);
 ReviewedBoundaryChecks.Run(Test, Check);
 SaveRecoveryChecks.Run(Test, Check);
 PrefabIdentityChecks.Run(Test, Check);

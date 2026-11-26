@@ -709,6 +709,26 @@ try {
     $gameAssembly = [Mono.Cecil.AssemblyDefinition]::ReadAssembly((Join-Path $projectRoot '../../Silverpine_Data/Managed/Assembly-CSharp.dll'))
     try {
         $nativePool = $gameAssembly.MainModule.Types | Where-Object Name -eq 'ObjectPool'
+        Assert-MethodCalls 'GrassZoneClaimPatch' 'Prefix' 'GrassZoneLifecycle::BeforeClaim'
+        Assert-MethodCalls 'GrassZoneStartPatch' 'Prefix' 'GrassZoneLifecycle::ShouldStart'
+        Assert-MethodCalls 'GrassZoneUnregisterPatch' 'Prefix' 'GrassZoneLifecycle::ShouldUnregister'
+        Assert-MethodCalls 'GrassZoneRepair' 'OnTileReady' 'MapZone::SetZoneName'
+        Assert-MethodCalls 'StructureSaveState' 'ProcessLoadedTile' 'GrassZoneRepair::OnTileReady'
+        Assert-MethodCalls 'StructureSaveState' 'TileCleared' 'GrassZoneRepair::ForgetRegeneratedTile'
+        $nativeZone = $gameAssembly.MainModule.Types | Where-Object Name -eq 'MapZone'
+        $worldBlob = ($gameAssembly.MainModule.Types | Where-Object Name -eq 'WorldTile').Fields | Where-Object Name -eq 'brotliBlob'
+        $poolField = $nativePool.Fields | Where-Object Name -eq 'freePools'
+        $zoneField = $nativeZone.Fields | Where-Object Name -eq 'registered'
+        $serialized = ($gameAssembly.MainModule.Types | Where-Object Name -eq 'SerializationManager').Methods | Where-Object Name -eq 'DeserializeSerializable'
+        $nativeOrder = @($serialized.Body.Instructions | ForEach-Object { if ($_.Operand -is [Mono.Cecil.MethodReference]) { $_.Operand.DeclaringType.Name+'::'+$_.Operand.Name } })
+        if ($worldBlob.FieldType.FullName -ne 'System.Byte[]' -or
+            $poolField.FieldType.FullName -notlike '*Dictionary*<UnityEngine.GameObject,*Stack*<UnityEngine.GameObject>>' -or
+            $zoneField.FieldType.FullName -notlike '*Dictionary*<UnityEngine.Vector2Int,MapZone>' -or
+            $nativeOrder.IndexOf('ObjectPool::Claim') -lt 0 -or
+            $nativeOrder.IndexOf('ISerializableMonoBehavior::Deserialize') -le $nativeOrder.IndexOf('ObjectPool::Claim')) {
+            throw 'Installed game does not match the temporary grass-zone reader or permanent pre-deserialization pool guard.'
+        }
+        'PASS Installed game reuses grass before restoring its saved name; legacy cleanup runs on load, not from a menu.'
         $owners = $nativePool.Fields | Where-Object Name -eq 'claimedMappings'
         $release = $nativePool.Methods | Where-Object Name -eq 'Release'
         $releaseCalls = @($release.Body.Instructions | Where-Object { $_.Operand -is [Mono.Cecil.MethodReference] } | ForEach-Object { $_.Operand.Name })

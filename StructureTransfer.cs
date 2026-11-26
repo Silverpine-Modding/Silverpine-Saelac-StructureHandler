@@ -1241,7 +1241,7 @@ internal static class StructureTransfer
         GameObject gameObject, string zoneName)
     {
         MapZone mapZone = gameObject.GetComponentInChildren<MapZone>(true);
-        if (mapZone != null)
+        if (mapZone != null && !GrassZoneLifecycle.ApplyImported(mapZone, zoneName))
             SetStringField(mapZone, "zoneName", zoneName);
     }
 

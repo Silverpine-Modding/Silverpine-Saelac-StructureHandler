@@ -38,10 +38,11 @@ internal static class StructureSaveState
         registration = ModSaveData.Register(Plugin.PluginGuid, new ModSaveDataDefinition
         {
             Id = Plugin.PluginGuid + ".world",
-            CurrentVersion = 5,
+            CurrentVersion = 6,
             // Older versions have no imported-cell history (or supplemental
             // terrain). Empty additive defaults never invent import footprints.
-            Migrate = (version, payload) => version >= 1 && version <= 4 ? payload :
+            Migrate = (version, payload) => version == 5 ? GrassZoneRepair.Upgrade(payload) :
+                version >= 1 && version <= 4 ? payload :
                 throw new InvalidDataException("Unsupported structure save version."),
             Capture = Capture,
             Restore = RestoreSavedPayload,
@@ -57,6 +58,7 @@ internal static class StructureSaveState
         RecoveryRequired = false;
         MarketCrates.Reset();
         TerrainRepair.Reset();
+        GrassZoneRepair.Restore(null);
         StructureTerrainPersistence.Reset();
         foreach (var state in UnityEngine.Object.FindObjectsOfType<StructureInstanceState>(true))
             state.ReleasePooledState();
@@ -89,6 +91,7 @@ internal static class StructureSaveState
             supplementalObjects = StructureTerrainPersistence.Ledger.Objects.Values.ToList(),
             clearedScenery = StructureTerrainPersistence.Ledger.Cleared.Values.ToList(),
             importedCells = ImportedCells.Capture(),
+            legacyGrassRepair = GrassZoneRepair.Capture(),
             sharedMarket = MarketCrates.Capture()
         });
     }
@@ -108,6 +111,7 @@ internal static class StructureSaveState
         MarketCrates.Restore(state.sharedMarket);
         StructureTerrainPersistence.Ledger = prepared.Ledger;
         ImportedCells.Restore(prepared.Imported);
+        GrassZoneRepair.Restore(state.legacyGrassRepair);
         Plugin.ProtectedWorldTiles.Clear();
         Plugin.BuildableWorldTiles.Clear();
         foreach (var tile in prepared.Protected) Plugin.ProtectedWorldTiles.Add(new Vector2Int(tile.X, tile.Y));
@@ -201,6 +205,7 @@ internal static class StructureSaveState
         try
         {
             StructureTerrainPersistence.RestoreLoaded(tile);
+            GrassZoneRepair.OnTileReady(tile);
             foreach (var pending in Pending.Where(p => p.x == tile.x && p.y == tile.y).ToArray())
             {
                 if (pending.boundaryTail?.Count > 0)
@@ -299,6 +304,7 @@ internal static class StructureSaveState
     }
     internal static void TileCleared(Vector2Int tile)
     {
+        GrassZoneRepair.ForgetRegeneratedTile(tile);
         ImportedCells.ClearWorldTile(tile.x, tile.y);
         StructureTerrainPersistence.ClearTile(tile);
         ResourceRegeneration.RemoveMarkersForWorldTile(tile);
