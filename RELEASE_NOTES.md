@@ -1,14 +1,14 @@
-# Structure Handler 1.2.39
+# Structure Handler 1.2.40
 
 Created by **Saelac and ChatGPT**.
 
-This update keeps imported grass zones from following pooled grass to unrelated coordinates.
+This update makes the native public approach side editable on doors.
 
 ## Requirements and installation
 
 - Silverpine 1.7.3 and BepInEx 5.
 - **[ModdingTools 1.12.0 or newer](https://github.com/Silverpine-Modding/Silverpine-Saelac-Modding-Tools/releases)** must be installed separately. This requirement is enforced by the plugin.
-- Close the game. Extract `StructureHandler-1.2.39.zip` into
+- Close the game. Extract `StructureHandler-1.2.40.zip` into
   `BepInEx/plugins/StructureHandler/`, replacing the previous DLL, or replace
   that DLL with the standalone download. Do not keep a second copy elsewhere
   under `BepInEx/plugins`.
@@ -16,7 +16,14 @@ This update keeps imported grass zones from following pooled grass to unrelated 
   `.sav.moddingtools` companion alongside its `.sav` file when copying or
   restoring saves. This download does not contain or update ModdingTools.
 
-## New in 1.2.39
+## New in 1.2.40
+
+- Select a door in the Objects tab to edit its public approach side. Each
+  choice names the tile relative to the door: north/up (+Y), south/down (−Y),
+  west/left (−X), or east/right (+X). Both exported and quick-placed doors
+  use the game's native saved field. Locks, keys and owners are unchanged.
+
+## Changes in 1.2.39
 
 - Grass and swamp grass reset their zone before reuse. A native saved name is
   applied afterward, at its actual coordinate. Repeated pool callbacks cannot

@@ -11,6 +11,9 @@ internal sealed partial class StructureEditorUI
         internal bool HasSign, HasZone, Furniture, CustomCollider, Passable;
         internal int Rotations, RootColliders;
         internal string SignMessage = "";
+        internal Door? Door;
+        internal string? DoorDefault, LastDoorPayload, DoorReadError;
+        internal int DoorSide;
     }
     private static readonly Dictionary<string, EditorPrefabMetadata> editorPrefabMetadata = new(StringComparer.OrdinalIgnoreCase);
 
@@ -25,6 +28,10 @@ internal sealed partial class StructureEditorUI
             if (info.HasSign) info.SignMessage = GetPrefabStringField(name, "message", typeof(Sign), typeof(SimpleSign));
             info.HasZone = prefab.GetComponentInChildren<MapZone>(true) != null;
             info.Rotations = prefab.GetComponentInChildren<Turnable>(true)?.sprites?.Length ?? 0;
+            // Silverpine saves native root components. Don't offer door options
+            // on names containing "door", child decorations or custom serializers.
+            var doors = prefab.GetComponents<Door>();
+            if (doors.Length == 1 && doors[0].GetType() == typeof(Door)) info.Door = doors[0];
             info.Furniture = name.StartsWith("prefab_furniture_", StringComparison.OrdinalIgnoreCase) || prefab.GetComponent<Pickupable>() != null;
             var colliders = prefab.GetComponents<TurfCollider>();
             info.RootColliders = colliders.Length;

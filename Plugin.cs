@@ -27,7 +27,7 @@ public sealed class Plugin : BaseUnityPlugin
 {
     public const string PluginGuid = "renegadex.silverpine.customstructures";
     public const string PluginName = "Structure Handler";
-    public const string PluginVersion = "1.2.39";
+    public const string PluginVersion = "1.2.40";
     public const int EditorApiVersion = 2;
 
     internal static ManualLogSource Log = null!;

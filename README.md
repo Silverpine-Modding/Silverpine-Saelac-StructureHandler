@@ -3,7 +3,14 @@
 Adds Structure Handler controls to Silverpine's shared in-game **Mods** menu
 and a structure editor to the main-menu mod tools.
 
-Version **1.2.39** requires **ModdingTools 1.12.0 or newer**.
+Version **1.2.40** requires **ModdingTools 1.12.0 or newer**.
+
+Select a door under **Objects → Door: public approach side** to choose where
+the character stands: north/up (+Y), south/down (−Y), west/left (−X), or
+east/right (+X) of the door. This is a world direction, not the character's
+facing or the door sprite's rotation. It does not lock or unlock the door,
+change ownership, or bypass a specific required key. Save the JSON and import
+it to apply the edit; Silverpine then saves the setting on the door itself.
 
 Imported grass keeps its zone at its saved coordinate when Silverpine reuses
 grass elsewhere. For pre-fix saves with an import footprint, 1.2.39 and

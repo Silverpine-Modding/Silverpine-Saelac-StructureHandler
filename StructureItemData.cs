@@ -66,7 +66,7 @@ internal static class StructureItemData
         }
         return storage;
     }
-    private static Dictionary<string, object> Fields(VersionSafeStorage storage) =>
+    internal static Dictionary<string, object> Fields(VersionSafeStorage storage) =>
         (Dictionary<string, object>)StorageField.GetValue(storage)!;
     internal static Item Clone(Item item)
     {

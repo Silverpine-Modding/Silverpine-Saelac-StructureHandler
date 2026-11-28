@@ -6,6 +6,7 @@ void Check(bool value) { if (!value) throw new Exception("Native serialization a
 WaterSettingsChecks.Run(Check);
 ItemStorageChecks.Run(Check);
 MarketChecks.Run(Check);
+DoorAccessChecks.Run(Check);
 var preGrass = (StructureWorldState)StringSerializationAPI.Deserialize(typeof(StructureWorldState), "{\"importedCells\":[{\"x\":10,\"y\":12}]}");
 Check(preGrass.legacyGrassRepair == null && preGrass.importedCells[0].y == 12);
 preGrass.legacyGrassRepair = new LegacyGrassRepairState();

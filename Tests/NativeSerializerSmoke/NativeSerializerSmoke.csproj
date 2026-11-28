@@ -22,6 +22,7 @@
     <Compile Include="..\..\FurnitureCollision.cs" Link="FurnitureCollision.cs" />
     <Compile Include="..\..\ItemCustomizationRules.cs" Link="ItemCustomizationRules.cs" />
     <Compile Include="..\..\StructureItemData.cs" Link="StructureItemData.cs" />
+    <Compile Include="..\..\DoorAccessData.cs" Link="DoorAccessData.cs" />
     <Compile Include="..\..\PlayerBuildableSleep.cs" Link="PlayerBuildableSleep.cs" />
     <Compile Include="..\..\PlayerBuildablePickup.cs" Link="PlayerBuildablePickup.cs" />
     <Reference Include="0Harmony">

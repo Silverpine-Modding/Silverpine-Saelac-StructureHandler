@@ -709,6 +709,18 @@ try {
     $gameAssembly = [Mono.Cecil.AssemblyDefinition]::ReadAssembly((Join-Path $projectRoot '../../Silverpine_Data/Managed/Assembly-CSharp.dll'))
     try {
         $nativePool = $gameAssembly.MainModule.Types | Where-Object Name -eq 'ObjectPool'
+        Assert-MethodCalls 'StructureEditorUI' 'DrawSelectedObject' 'StructureEditorUI::DrawDoorAccess'
+        Assert-MethodCalls 'StructureEditorUI' 'DrawDoorAccess' 'DoorAccessData::Set'
+        Assert-MethodCalls 'StructureTransfer' 'InstantiateObjectRecords' 'StructureTransfer::ApplyComponentRecords'
+        $nativeDoor = $gameAssembly.MainModule.Types | Where-Object Name -eq 'Door'
+        $doorLoad = ($nativeDoor.Methods | Where-Object Name -eq 'Deserialize').Body.Instructions
+        $directionField = $nativeDoor.Fields | Where-Object Name -eq 'publicAccess'
+        if ($directionField.FieldType.FullName -ne 'Direction' -or
+            -not ($doorLoad | Where-Object { $_.OpCode.Name -eq 'ldstr' -and $_.Operand -ceq 'publicAccess' }) -or
+            -not ($doorLoad | Where-Object { $_.OpCode.Name -eq 'stfld' -and $_.Operand.FullName -eq $directionField.FullName })) {
+            throw 'Installed game no longer restores the native publicAccess field on Door.'
+        }
+        'PASS Selected-door control uses the native component data restored on import and game load.'
         Assert-MethodCalls 'GrassZoneClaimPatch' 'Prefix' 'GrassZoneLifecycle::BeforeClaim'
         Assert-MethodCalls 'GrassZoneStartPatch' 'Prefix' 'GrassZoneLifecycle::ShouldStart'
         Assert-MethodCalls 'GrassZoneUnregisterPatch' 'Prefix' 'GrassZoneLifecycle::ShouldUnregister'

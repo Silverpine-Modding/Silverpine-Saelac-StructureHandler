@@ -1468,6 +1468,7 @@ internal sealed partial class StructureEditorUI :
             }
         }
 
+        DrawDoorAccess(item);
         DrawFurnitureCollision(item);
 
         bool nextRangeExtender = GUILayout.Toggle(
